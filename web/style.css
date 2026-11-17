@@ -73,9 +73,10 @@ main { flex: 1; min-height: 0; position: relative; }
 .grid {
   flex: 1; overflow: auto; padding: 16px; display: grid; gap: 14px; align-content: start;
   grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  grid-auto-rows: max-content;   /* rows never shrink to fit the visible height; the grid scrolls instead */
 }
 .card {
-  position: relative; aspect-ratio: 16 / 10; border-radius: 8px; overflow: hidden; cursor: pointer;
+  position: relative; border-radius: 8px; overflow: hidden; cursor: pointer;
   background: var(--panel); border: 2px solid transparent; transition: transform .12s ease, border-color .12s;
 }
 .card:hover { transform: translateY(-2px); }
@@ -86,6 +87,8 @@ main { flex: 1; min-height: 0; position: relative; }
 }
 .card.dim .thumb { filter: grayscale(.8) brightness(.6); }
 .thumb { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* The card's height comes from its picture: an aspect-ratio on the grid item itself let rows collapse. */
+.card > .thumb { height: auto; aspect-ratio: 16 / 10; }
 .thumb.none, .big.none, .mthumb.none, .pthumb.none { display: grid; place-items: center; color: var(--dim); background: var(--raise); font-weight: 600; }
 .cap {
   position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 6px; padding: 18px 8px 6px;

@@ -1,7 +1,7 @@
 // Pape library window. Talks to the program (Engine.cs) through chrome.webview messages:
 //   in:  state {config, items, displays, ...}, status {...}, folder {path}, nav {page}
 //   out: ready, config {config}, rescan, cmd {name, arg}, pickFolder, open {path}, devtools {display}, reset
-const VERSION='0.1.0';
+const VERSION='0.1.1';
 
 const wv = window.chrome && window.chrome.webview;
 const send = m => wv && wv.postMessage(m);
@@ -41,8 +41,7 @@ function save() {
 
 /* ---------------- messages from Pape ---------------- */
 
-wv && wv.addEventListener('message', e => {
-  const m = e.data;
+function onMessage(m) {
   if (m.type === 'state') {
     cfg = m.config; items = m.items; displays = m.displays;
     info = { version: m.version, dataDir: m.dataDir, weInstall: m.weInstall };
@@ -61,7 +60,10 @@ wv && wv.addEventListener('message', e => {
   } else if (m.type === 'nav') {
     showTab(m.page);
   }
-});
+}
+// Inside Pape messages come from the program; in a plain browser (layout testing) call window.__papeMessage(m).
+if (wv) wv.addEventListener('message', e => onMessage(e.data));
+else window.__papeMessage = onMessage;
 
 /* ---------------- shared helpers ---------------- */
 

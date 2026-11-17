@@ -12,7 +12,7 @@
     <ApplicationIcon>app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <!-- Keep in step with VERSION in web\app.js; publish.ps1 checks. -->
-    <Version>0.1.0</Version>
+    <Version>0.1.1</Version>
     <Product>Pape</Product>
     <Description>Live wallpapers behind your desktop icons</Description>
     <Copyright>Copyright (c) 2026 DontGoToCollege</Copyright>
