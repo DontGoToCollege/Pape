@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en" data-theme="slate">
+<head>
+<meta charset="utf-8">
+<title>Pape</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="top">
+  <div class="brand"><span class="mark"></span>pape</div>
+  <nav id="tabs">
+    <button data-tab="wallpapers">Wallpapers</button>
+    <button data-tab="displays">Displays</button>
+    <button data-tab="playlists">Playlists</button>
+    <button data-tab="settings">Settings</button>
+  </nav>
+  <div class="spacer"></div>
+  <label class="disp">Showing on <select id="dispSel"></select></label>
+  <div class="quick">
+    <button id="qPause" title="Pause every wallpaper">Pause</button>
+    <button id="qMute" title="Mute every wallpaper">Mute</button>
+    <button id="qStop" title="Stop every wallpaper and free its memory">Stop</button>
+  </div>
+</header>
+
+<main>
+  <section id="tab-wallpapers" class="tab">
+    <div class="lib">
+      <div class="toolbar">
+        <input id="search" type="search" placeholder="Search wallpapers" spellcheck="false">
+        <div class="chips" id="typeChips"></div>
+        <label class="chk"><input type="checkbox" id="favOnly"> Favourites</label>
+        <select id="sort" title="Sort by">
+          <option value="name">Name</option>
+          <option value="recent">Last modified</option>
+          <option value="size">File size</option>
+          <option value="fav">Favourites first</option>
+        </select>
+        <button id="addUrl" title="Use a web page as a wallpaper">Open URL…</button>
+        <button id="rescan" title="Look for new wallpapers in your folders">Rescan</button>
+      </div>
+      <div id="grid" class="grid"></div>
+      <div id="empty" class="empty"></div>
+    </div>
+    <aside id="panel"></aside>
+  </section>
+  <section id="tab-displays" class="tab"></section>
+  <section id="tab-playlists" class="tab"></section>
+  <section id="tab-settings" class="tab"></section>
+</main>
+
+<footer id="status"></footer>
+<script src="app.js"></script>
+</body>
+</html>

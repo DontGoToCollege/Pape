@@ -1,0 +1,80 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Pape player</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  .layer { position: absolute; inset: 0; opacity: 0; transition: opacity .9s ease; overflow: hidden; }
+  .layer.on { opacity: 1; }
+  .layer > img, .layer > video { width: 100%; height: 100%; display: block; }
+</style>
+</head>
+<body>
+<script>
+// Shows image and video wallpapers. Pape posts: show {item, props, volume, fade, paused}, props, paused.
+const wv = window.chrome.webview;
+let cur = null, paused = false;
+
+function style(el, p, volume) {
+  const fit = { cover: 'cover', fit: 'contain', stretch: 'fill', center: 'none' }[p.align || 'cover'] || 'cover';
+  const zoom = p.zoom ?? 1;
+  el.style.objectFit = fit;
+  el.style.objectPosition = `${p.x ?? 50}% ${p.y ?? 50}%`;
+  el.style.transform = zoom === 1 && !p.flip ? '' : `scale(${zoom * (p.flip ? -1 : 1)}, ${zoom})`;
+  const f = `brightness(${p.brightness ?? 1}) contrast(${p.contrast ?? 1}) saturate(${p.saturation ?? 1}) hue-rotate(${p.hue ?? 0}deg)`;
+  el.style.filter = f === 'brightness(1) contrast(1) saturate(1) hue-rotate(0deg)' ? '' : f;
+  el.style.imageRendering = p.pixel ? 'pixelated' : '';
+  el.parentElement && (el.parentElement.style.background = p.bg || '#000');
+  if (el.tagName === 'VIDEO') {
+    el.playbackRate = p.rate ?? 1;
+    el.volume = Math.max(0, Math.min(1, ((p.volume ?? 50) / 100) * (volume ?? 1)));
+  }
+}
+
+function show(m) {
+  const layer = document.createElement('div');
+  layer.className = 'layer';
+  if (!m.fade) layer.style.transition = 'none';
+  const video = m.item.type === 'video';
+  const el = document.createElement(video ? 'video' : 'img');
+  layer.appendChild(el);
+  style(el, m.props || {}, m.volume);
+  if (video) {
+    el.loop = true;
+    el.playsInline = true;
+    el.autoplay = !m.paused;
+  }
+  el.src = m.item.url;
+  document.body.appendChild(layer);
+  let done = false;
+  const reveal = () => {
+    if (done) return;
+    done = true;
+    requestAnimationFrame(() => {
+      layer.classList.add('on');
+      const old = cur;
+      cur = layer;
+      if (old) setTimeout(() => old.remove(), m.fade ? 950 : 0);
+    });
+  };
+  if (video) el.addEventListener('loadeddata', reveal, { once: true });
+  else el.decode().then(reveal, reveal);
+  el.addEventListener('error', reveal, { once: true });
+  paused = !!m.paused;
+}
+
+wv.addEventListener('message', e => {
+  const m = e.data;
+  if (m.type === 'show') show(m);
+  else if (m.type === 'props') {
+    const el = (document.querySelector('.layer:last-child') || {}).firstChild;
+    if (el) style(el, m.props || {}, m.volume);
+  } else if (m.type === 'paused') {
+    paused = m.value;
+    document.querySelectorAll('video').forEach(v => paused ? v.pause() : v.play().catch(() => {}));
+  }
+});
+</script>
+</body>
+</html>

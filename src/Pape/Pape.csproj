@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <AssemblyName>Pape</AssemblyName>
+    <RootNamespace>Pape</RootNamespace>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- Keep in step with VERSION in web\app.js; publish.ps1 checks. -->
+    <Version>0.1.0</Version>
+    <Product>Pape</Product>
+    <Description>Live wallpapers behind your desktop icons</Description>
+    <Copyright>Copyright (c) 2026 DontGoToCollege</Copyright>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- WebView2's WPF assembly comes along with the package; Pape is WinForms only, so its WindowsBase clash doesn't matter. -->
+    <MSBuildWarningsAsMessages>MSB3277</MSBuildWarningsAsMessages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
+    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
+  </ItemGroup>
+
+  <!-- The UI and the image/video player are embedded and served from a private virtual host (see WebHost.cs). -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\web\**\*" LogicalName="web/%(RecursiveDir)%(Filename)%(Extension)" />
+    <EmbeddedResource Include="shim.js" LogicalName="shim.js" />
+    <EmbeddedResource Include="smoke.js" LogicalName="smoke.js" />
+    <EmbeddedResource Include="app.ico" LogicalName="app.ico" />
+  </ItemGroup>
+
+</Project>
