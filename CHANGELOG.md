@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0 (2026-11-18)
+
+Phase 2, step 4: **bloom (glow)**.
+
+- Scenes with bloom on now glow, using Wallpaper Engine's own four bloom passes (bright parts at quarter size,
+  blurred at an eighth, added back) with the scene's strength, threshold and tint, including user-bound values.
+- 3D scenes draw see-through models far to near, so their clear parts no longer hide what's behind them
+  (Neon Sunset's sun now sits behind the mountains). Opaque models and backgrounds keep the scene's order.
+- Self-check confirms the bloom passes compile.
+
 ## 0.4.0 (2026-11-17)
 
 Phase 2, step 3: **3D scenes**.

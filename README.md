@@ -10,7 +10,7 @@ Pape is offline and portable: one `.exe`, no account, no store, and your setting
   or your own folders, including their settings (colours, sliders, switches) and music-reactive bars.
   *Scene* wallpapers play too, with their layers, effects and settings (Wallpaper Engine must be installed on the
   same PC for scenes that use its effects), including their particles (snow, rain, fire, sparkles and more)
-  and 3D scenes with models, lights and moving cameras.
+  and 3D scenes with models, lights, moving cameras and glow (bloom).
 - **Library:** search, filter by type, sort, favourites, and open any web page by its address.
 - **Per-wallpaper look:** alignment (cover, fit, stretch, centre), position, zoom, flip, brightness, contrast,
   saturation, hue, video speed and volume, plus saved **presets**.

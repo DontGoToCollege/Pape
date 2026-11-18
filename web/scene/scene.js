@@ -1,7 +1,7 @@
 // Renders Wallpaper Engine 2D scenes (orthographic camera): image layers with their materials and
 // effect chains, user-property bindings, sprite sheets, video textures, mouse parallax and audio.
 // Particles are simulated in particles.js; 3D scenes use a perspective camera and .mdl models (model.js).
-// Not yet: puppet warp, skinned/animated models, shadows, text, sound, bloom,
+// Bloom runs WE's own four bloom passes. Not yet: puppet warp, skinned/animated models, shadows, text, sound,
 // SceneScript (those layers are skipped).
 //
 // Conventions: the scene buffer is GL-native (y up, scene units 0..W, 0..H). Every per-layer buffer
@@ -434,6 +434,20 @@ export class Scene {
         warn('layer', o.name, e.message);
       }
     }
+    // WE's bloom: bright parts at quarter size, blurred at an eighth, added back (assets/materials/util)
+    if (this.assets) {
+      const util = async (name, binds) => {
+        const mat = await this.json(`materials/util/${name}.json`);
+        return mat?.passes?.[0] ? this.pass(mat.passes[0], {}, this.reader(), binds) : null;
+      };
+      const passes = [
+        await util('downsample_quarter_bloom', { 0: '_rt_FullFrameBuffer' }),
+        await util('downsample_eighth_blur_v', { 0: '_rt_4FrameBuffer' }),
+        await util('blur_h_bloom', { 0: '_rt_8FrameBuffer' }),
+        await util('combine', { 0: '_rt_FullFrameBuffer', 1: '_rt_8FrameBufferB' }),
+      ];
+      if (passes.every(Boolean)) this.bloomPasses = passes;
+    }
     this.resize();
     const used = [...this.programs.values()].filter(Boolean).flatMap(p => [...p.uniforms.keys()]);
     this.usesAudio = used.some(n => n.startsWith('g_AudioSpectrum'));
@@ -651,6 +665,10 @@ export class Scene {
     }
     this.sceneRt = this.target(this.width * s, this.height * s, true);
     this.fullRt = this.target(this.width * s, this.height * s);
+    for (const rt of [this.rt4, this.rt8, this.rt8b]) if (rt) { gl.deleteTexture(rt.tex); gl.deleteFramebuffer(rt.fbo); }
+    this.rt4 = this.target(this.sceneRt.width / 4, this.sceneRt.height / 4);
+    this.rt8 = this.target(this.sceneRt.width / 8, this.sceneRt.height / 8);
+    this.rt8b = this.target(this.sceneRt.width / 8, this.sceneRt.height / 8);
   }
 
   /* ---------- drawing ---------- */
@@ -672,8 +690,8 @@ export class Scene {
     };
     for (const [k, v] of Object.entries(this.globals)) put(k, v);
     for (const [k, v] of Object.entries(extra)) put(k, v);
-    put('g_TexelSize', [1 / target.width, 1 / target.height]);
-    put('g_TexelSizeHalf', [0.5 / target.width, 0.5 / target.height]);
+    if (!('g_TexelSize' in extra)) put('g_TexelSize', [1 / target.width, 1 / target.height]);
+    if (!('g_TexelSizeHalf' in extra)) put('g_TexelSizeHalf', [0.5 / target.width, 0.5 / target.height]);
     for (const [name, { raw, key }] of Object.entries(p.values)) {
       const bound = p.userKeys[key];
       put(name, this.value(bound !== undefined ? { user: bound, value: raw } : raw));
@@ -797,20 +815,57 @@ export class Scene {
       this.pointerScene = [((sr.width - sw) / 2 + this.pointer[0] * sw) / this.scale, ((sr.height - sh) / 2 + (1 - this.pointer[1]) * sh) / this.scale];
     }
 
-    for (const layer of this.layers) {
+    // In 3D, each run of see-through (translucent or additive) models draws far to near, so their clear parts
+    // don't hide what's behind them. Everything else keeps the scene's order: opaque models (the depth buffer
+    // sorts those), backgrounds first, full-screen effects last.
+    let order = this.layers;
+    if (this.is3D) {
+      const dist = l => { const p = nums(this.value(l.o.origin) ?? '0 0 0'); return -Math.hypot(p[0] - this.eye[0], (p[1] ?? 0) - this.eye[1], (p[2] ?? 0) - this.eye[2]); };
+      const sortable = l => l.meshes?.every(m => m.passes.every(p => p.depthtest !== 'disabled' && (p.blending === 'translucent' || p.blending === 'additive')));
+      order = [];
+      for (let i = 0; i < this.layers.length;) {
+        let j = i;
+        while (j < this.layers.length && sortable(this.layers[j])) j++;
+        if (j > i) { order.push(...this.layers.slice(i, j).sort((a, b) => dist(a) - dist(b))); i = j; }
+        else order.push(this.layers[i++]);
+      }
+    }
+    for (const layer of order) {
       const o = layer.o;
       if (this.value(o.visible) === false) continue;
       try { this.drawLayer(layer, W, H, amount, dt); } catch (e) { warn('draw', o.name, e.message); layer.o = { ...o, visible: false }; }
     }
 
+    const shown = this.bloom(scene);
+
     // cover the screen: crop the scene's longer side, centred
     const cw = this.canvas.width, ch = this.canvas.height;
     const s = Math.max(cw / scene.width, ch / scene.height);
     const sw = cw / s, sh = ch / s, sx = (scene.width - sw) / 2, sy = (scene.height - sh) / 2;
-    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, scene.fbo);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, shown.fbo);
     gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
     gl.blitFramebuffer(sx, sy, sx + sw, sy + sh, 0, 0, cw, ch, gl.COLOR_BUFFER_BIT, gl.LINEAR);
     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+  }
+
+  /** Adds the glow when the scene has bloom on; returns the buffer to show. */
+  bloom(scene) {
+    const g = this.general, passes = this.bloomPasses;
+    if (!passes || !this.value(g.bloom)) return scene;
+    const hdr = !!this.value(g.hdr);
+    const strength = nums(this.value(hdr ? g.bloomhdrstrength ?? g.bloomstrength : g.bloomstrength) ?? 2)[0];
+    const threshold = nums(this.value(hdr ? g.bloomhdrthreshold ?? g.bloomthreshold : g.bloomthreshold) ?? 0.65)[0];
+    const tint = this.value(g.bloomtint) ?? '1 1 1';
+    const bright = passes[0].values;
+    if (bright.g_BloomStrength) bright.g_BloomStrength.raw = strength;
+    if (bright.g_BloomThreshold) bright.g_BloomThreshold.raw = threshold;
+    if (bright.g_BloomTint) bright.g_BloomTint.raw = tint;
+    const rts = { _rt_FullFrameBuffer: scene, _rt_4FrameBuffer: this.rt4, _rt_8FrameBuffer: this.rt8, _rt_8FrameBufferB: this.rt8b };
+    const texel = { g_TexelSize: [1 / scene.width, 1 / scene.height] };
+    // the scene buffer is already in GL row order, so these full-frame passes need no flipping
+    [this.rt4, this.rt8, this.rt8b, this.fullRt].forEach((target, i) =>
+      this.drawWith(passes[i], target, identity(), this.quad, n => rts[n] ?? null, identity(), texel, 'normal'));
+    return this.fullRt;
   }
 
   drawLayer(layer, W, H, amount, dt = 0) {

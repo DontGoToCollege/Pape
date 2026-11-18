@@ -1009,6 +1009,8 @@ sealed class Engine : ApplicationContext
                 Refresh();
                 var carInfo = await WaitFor("String(window.__sceneError || (window.__scene && window.__scene.is3D && window.__scene.layers.filter(l => l.meshes).length) || '')", v => v.Length > 2);
                 Check(carInfo == "\"4\"", $"Wallpaper Engine's 3D Fantastic Car scene loads its 4 models ({carInfo})");
+                var bloom = await WaitFor("String(window.__scene?.bloomPasses?.length || 0)", v => v != "\"0\"");
+                Check(bloom == "\"4\"", $"Wallpaper Engine's 4 bloom passes compile ({bloom})");
                 await Task.Delay(1500);
                 if (_windows.TryGetValue(key, out win)) await win.CaptureAsync(Path.Combine(dir, "smoke-we-3d.png"));
             }

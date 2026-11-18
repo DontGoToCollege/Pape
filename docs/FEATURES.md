@@ -118,5 +118,6 @@ Data lives in `Pape-Data\` next to the exe (portable).
   per-monitor "pause all" vs "pause this display" choice (Pape pauses only the affected display).
 - **0.2.0:** Phase 2 step 1: 2D scenes (image layers, materials, effects, user settings, parallax, audio).
 - **0.3.0:** Phase 2 step 2: particles.
-- **0.4.0:** Phase 2 step 3: 3D scenes (camera paths, .mdl models, lights). Next: bloom, puppet warp and animated
-  models, text and sound layers, SceneScript, child particle systems.
+- **0.4.0:** Phase 2 step 3: 3D scenes (camera paths, .mdl models, lights). 
+- **0.5.0:** Phase 2 step 4: bloom, and far-to-near drawing of see-through 3D models. Next: puppet warp and
+  animated models, text and sound layers, SceneScript, child particle systems.
