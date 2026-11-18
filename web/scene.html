@@ -1,0 +1,82 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Pape scene</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas, img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  img { object-fit: cover; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script type="module">
+// Shows a Wallpaper Engine scene. Pape posts: show {item: {url, file, pkg, assets, preview}, props, user, paused},
+// props {props, user}, paused {value}, audio {data}, pointer {x, y}. If the scene can't be drawn, its
+// preview picture is shown instead.
+import { Scene } from './scene/scene.js';
+
+const wv = window.chrome && window.chrome.webview;
+const canvas = document.getElementById('c');
+let scene = null, paused = false, raf = 0, timer = 0;
+
+function fit() {
+  canvas.width = Math.round(innerWidth * devicePixelRatio);
+  canvas.height = Math.round(innerHeight * devicePixelRatio);
+}
+fit();
+addEventListener('resize', fit);
+
+// Frames come from requestAnimationFrame; when the browser thinks the window can't be seen it stops
+// sending those, so a 20 fps timer keeps the wallpaper moving anyway. Whichever fires first draws.
+function loop() {
+  cancelAnimationFrame(raf);
+  clearTimeout(timer);
+  raf = timer = 0;
+  if (!scene || paused) return;
+  scene.render();
+  window.__frames = (window.__frames || 0) + 1;
+  schedule();
+}
+function schedule() {
+  raf = requestAnimationFrame(loop);
+  timer = setTimeout(loop, 50);
+}
+const run = () => { if (!raf && !timer && scene && !paused) schedule(); };
+
+function look(p = {}) {
+  const f = `brightness(${p.brightness ?? 1}) contrast(${p.contrast ?? 1}) saturate(${p.saturation ?? 1}) hue-rotate(${p.hue ?? 0}deg)`;
+  document.body.style.filter = f === 'brightness(1) contrast(1) saturate(1) hue-rotate(0deg)' ? '' : f;
+}
+
+async function show(m) {
+  paused = !!m.paused;
+  look(m.props);
+  try {
+    scene = await Scene.load({ canvas, base: m.item.url, pkg: m.item.pkg, file: m.item.file, assets: m.item.assets, user: m.user });
+    window.__scene = scene;
+    if (scene.usesAudio) wv?.postMessage({ type: 'audio' });
+    if (scene.usesPointer) wv?.postMessage({ type: 'pointer' });
+    run();
+  } catch (e) {
+    console.error(e);
+    window.__sceneError = e.message;
+    canvas.remove();
+    if (m.item.preview) document.body.append(Object.assign(document.createElement('img'), { src: m.item.preview }));
+  }
+}
+
+function onMessage(m) {
+  if (m.type === 'show') show(m);
+  else if (m.type === 'props') { look(m.props); if (scene) scene.user = m.user || {}; }
+  else if (m.type === 'paused') { paused = m.value; run(); }
+  else if (m.type === 'audio' && scene) scene.audio.set(m.data);
+  else if (m.type === 'pointer' && scene) scene.pointer = [m.x, m.y];
+}
+if (wv) wv.addEventListener('message', e => onMessage(e.data));
+window.__papeMessage = onMessage;
+window.__state = () => ({ paused, raf, timer, hidden: document.hidden });
+</script>
+</body>
+</html>

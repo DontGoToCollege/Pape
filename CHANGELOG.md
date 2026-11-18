@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.0 (2026-11-17)
+
+Phase 2, step 1: Wallpaper Engine **scene** wallpapers (2D).
+
+- Scenes play from their folder or a packed `scene.pkg` (as Steam's Workshop downloads them), with image layers,
+  their materials and effect chains (scroll, tint, blur, shine and the rest of WE's effects), drawn with WebGL.
+- Wallpaper Engine's shaders are translated to WebGL as they load; effects and shaders come from the
+  Wallpaper Engine install on the same PC and are never copied into Pape.
+- Scene settings (colours, switches, sliders bound to layers and effects), sprite-sheet animation, video
+  textures, mouse parallax and music-reactive shaders.
+- 3D scenes, particles, puppet animation, text and sound layers aren't drawn yet; 3D scenes show their preview.
+- Self-check now also builds and draws a packed test scene, and draws Wallpaper Engine's Beach sample when installed.
+
 ## 0.1.1 (2026-11-17)
 
 - Fixed the wallpaper grid: with more than a screenful of wallpapers the rows overlapped, so titles were hidden

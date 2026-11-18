@@ -73,18 +73,30 @@ static class Library
             // WE leaves "type" out of some older scene projects
             var type = (Str(p["type"]) ?? "scene").ToLowerInvariant();
             var file = Str(p["file"]);
+            if (type == "scene" && file?.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) == true) type = "application";
             var main = file is null ? null : Path.Combine(dir, file);
             var preview = Str(p["preview"]) is { } pv && File.Exists(Path.Combine(dir, pv)) ? Url(root, index, Path.Combine(dir, pv)) : null;
-            var supported = type is "video" or "web" && main is not null && File.Exists(main);
+            var hasMain = main is not null && File.Exists(main);
+            // Workshop scenes come packed into scene.pkg; WE's own samples are unpacked.
+            var pkg = type == "scene" && File.Exists(Path.Combine(dir, "scene.pkg"));
+            var scene = type == "scene" && (pkg || hasMain);
+            var supported = scene || type is "video" or "web" && hasMain;
+            // Only 2D (orthographic) scenes draw so far; a 3D one shows its preview. Packed scenes are checked when shown.
+            var flat = !scene || pkg || File.ReadAllText(main!).Contains("orthogonalprojection");
+            var size = pkg ? new FileInfo(Path.Combine(dir, "scene.pkg")).Length : hasMain ? new FileInfo(main!).Length : 0;
             return new JsonObject
             {
                 ["id"] = dir,
                 ["title"] = Str(p["title"]) ?? Path.GetFileName(dir),
                 ["type"] = type,
-                ["url"] = supported ? Url(root, index, main!) : null,
+                ["url"] = scene ? Url(root, index, dir).TrimEnd('/') + "/" : supported ? Url(root, index, main!) : null,
+                ["file"] = file,
+                ["pkg"] = pkg,
+                ["assets"] = scene && WeInstall is not null ? $"https://{WebHost.AssetsHost}/" : null,
+                ["note"] = flat ? null : "3D scene: shows its preview picture until 3D scenes are supported.",
                 ["preview"] = preview,
                 ["path"] = dir,
-                ["size"] = main is not null && File.Exists(main) ? new FileInfo(main).Length : 0,
+                ["size"] = size,
                 ["modified"] = Directory.GetLastWriteTimeUtc(dir).ToString("o"),
                 ["supported"] = supported,
                 ["tags"] = p["tags"]?.DeepClone(),
@@ -100,9 +112,11 @@ static class Library
         }
     }
 
-    static string Url(string root, int index, string path) =>
-        $"https://{WebHost.SourceHost(index)}/" +
-        string.Join('/', Path.GetRelativePath(root, path).Split('\\', '/').Select(Uri.EscapeDataString));
+    static string Url(string root, int index, string path)
+    {
+        var rel = Path.GetRelativePath(root, path);
+        return $"https://{WebHost.SourceHost(index)}/" + (rel == "." ? "" : string.Join('/', rel.Split('\\', '/').Select(Uri.EscapeDataString)));
+    }
 
     static string? Str(JsonNode? n) => n is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
 

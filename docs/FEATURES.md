@@ -116,3 +116,5 @@ Data lives in `Pape-Data\` next to the exe (portable).
 - **0.1.0:** Phase 1 delivered. Not yet in Phase 1: Windows lock-screen/wallpaper image override, accent colour
   from the wallpaper, desktop icon opacity, media integration (now-playing info), virtual desktops, screenshots,
   per-monitor "pause all" vs "pause this display" choice (Pape pauses only the affected display).
+- **0.2.0:** Phase 2 step 1: 2D scenes (image layers, materials, effects, user settings, parallax, audio).
+  Next: particles, then 3D scenes/models, puppet warp, text, sound, bloom, SceneScript.

@@ -508,18 +508,35 @@ sealed class Engine : ApplicationContext
 
     /* ================= audio for audio-reactive web wallpapers ================= */
 
+    /// <summary>Starts or stops the ~30 fps feed of audio bands and pointer position, as wallpapers ask for them.</summary>
     public void UpdateAudio()
     {
-        var wanted = _windows.Values.Any(w => w.WantsAudio);
-        if (wanted && !_audioTick.Enabled) { _audio.Start(); _audioTick.Start(); }
-        else if (!wanted && _audioTick.Enabled) { _audioTick.Stop(); _audio.Stop(); }
+        var audio = _windows.Values.Any(w => w.WantsAudio);
+        if (audio && !_audio.Running) _audio.Start();
+        else if (!audio && _audio.Running) _audio.Stop();
+        var feed = audio || _windows.Values.Any(w => w.WantsPointer);
+        if (feed && !_audioTick.Enabled) _audioTick.Start();
+        else if (!feed && _audioTick.Enabled) _audioTick.Stop();
     }
+
+    Point _lastPointer = new(int.MinValue, 0);
 
     void PushAudio()
     {
-        var json = "{\"type\":\"audio\",\"data\":" + JsonSerializer.Serialize(_audio.Bands()) + "}";
+        var json = _audio.Running ? "{\"type\":\"audio\",\"data\":" + JsonSerializer.Serialize(_audio.Bands()) + "}" : null;
+        var cursor = Cursor.Position;
+        var moved = cursor != _lastPointer;
+        _lastPointer = cursor;
         foreach (var w in _windows.Values)
-            if (w.WantsAudio) w.PostJson(json);
+        {
+            if (w.WantsAudio && json is not null) w.PostJson(json);
+            if (w.WantsPointer && moved && w.Bounds.Width > 0)
+            {
+                var b = w.Bounds;
+                FormattableString msg = $"{{\"type\":\"pointer\",\"x\":{(cursor.X - b.X) / (double)b.Width},\"y\":{(cursor.Y - b.Y) / (double)b.Height}}}";
+                w.PostJson(msg.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+        }
     }
 
     /* ================= commands: tray, hotkeys, UI buttons ================= */
@@ -811,8 +828,63 @@ sealed class Engine : ApplicationContext
               window.wallpaperRegisterAudioListener(a => { window.__audio = a.length; });
             </script></body></html>
             """);
+        // A packed scene with its own shader and texture: top half green, bottom half blue.
+        Directory.CreateDirectory(Path.Combine(src, "scene-test"));
+        File.WriteAllText(Path.Combine(src, "scene-test", "project.json"), """{"type":"scene","file":"scene.json","title":"Smoke Scene"}""");
+        var pixels = new byte[64 * 64 * 4];
+        for (var i = 0; i < 64 * 64; i++) { pixels[i * 4 + (i < 64 * 32 ? 1 : 2)] = 200; pixels[i * 4 + 3] = 255; }
+        byte[] Text(string t) => System.Text.Encoding.UTF8.GetBytes(t);
+        File.WriteAllBytes(Path.Combine(src, "scene-test", "scene.pkg"), SmokePkg(
+            ("scene.json", Text("""{"general":{"clearcolor":"1 0 0","orthogonalprojection":{"width":64,"height":64}},"objects":[{"name":"square","image":"models/smoke.json","origin":"32 32 0","scale":"1 1 1","angles":"0 0 0"}]}""")),
+            ("models/smoke.json", Text("""{"autosize":true,"material":"materials/smoke.json"}""")),
+            ("materials/smoke.json", Text("""{"passes":[{"shader":"smoke","blending":"translucent","textures":["smoke"],"constantshadervalues":{"mult":1}}]}""")),
+            ("materials/smoke.tex", SmokeTex(64, 64, pixels)),
+            ("shaders/smoke.vert", Text("""
+                uniform mat4 g_ModelViewProjectionMatrix;
+                attribute vec3 a_Position;
+                attribute vec2 a_TexCoord;
+                varying vec2 v_TexCoord;
+                void main() { gl_Position = mul(vec4(a_Position, 1.0), g_ModelViewProjectionMatrix); v_TexCoord = a_TexCoord; }
+                """)),
+            // "* 1" is an integer literal on purpose: Pape must turn it into 1.0 for WebGL
+            ("shaders/smoke.frag", Text("""
+                uniform sampler2D g_Texture0;
+                uniform float g_Mult; // {"material":"mult","default":0}
+                varying vec2 v_TexCoord;
+                void main() { gl_FragColor = texSample2D(g_Texture0, v_TexCoord) * g_Mult * 1; }
+                """))));
+        // rules off: what the owner happens to have on screen must not pause the self-check's wallpapers
+        var keep = new JsonObject();
+        foreach (var rule in new[] { "focused", "maximized", "fullscreen", "battery", "audio", "sleep" }) keep[rule] = "keep";
         File.WriteAllText(PortablePaths.ConfigFile,
-            new JsonObject { ["sources"] = new JsonArray(JsonValue.Create(src)) }.ToJsonString());
+            new JsonObject { ["sources"] = new JsonArray(JsonValue.Create(src)), ["rules"] = keep }.ToJsonString());
+    }
+
+    /// <summary>scene.pkg: "PKGV0001", file count, then (name, offset, length) entries and the file data.</summary>
+    static byte[] SmokePkg(params (string name, byte[] data)[] files)
+    {
+        using var ms = new MemoryStream();
+        using var w = new BinaryWriter(ms);
+        void Str(string t) { var b = System.Text.Encoding.UTF8.GetBytes(t); w.Write(b.Length); w.Write(b); }
+        Str("PKGV0001");
+        w.Write(files.Length);
+        var offset = 0;
+        foreach (var (name, data) in files) { Str(name); w.Write(offset); w.Write(data.Length); offset += data.Length; }
+        foreach (var (_, data) in files) w.Write(data);
+        return ms.ToArray();
+    }
+
+    /// <summary>An uncompressed RGBA .tex with one mip level.</summary>
+    static byte[] SmokeTex(int width, int height, byte[] rgba)
+    {
+        using var ms = new MemoryStream();
+        using var w = new BinaryWriter(ms);
+        w.Write("TEXV0005 TEXI0001 "u8);
+        foreach (var v in new[] { 0 /* RGBA8888 */, 2 /* clamp */, width, height, width, height, 0 }) w.Write(v);
+        w.Write("TEXB0003 "u8);
+        foreach (var v in new[] { 1 /* images */, -1 /* raw pixels */, 1 /* mips */, width, height, 0 /* not LZ4 */, rgba.Length, rgba.Length }) w.Write(v);
+        w.Write(rgba);
+        return ms.ToArray();
     }
 
     async Task RunSmokeAsync()
@@ -825,7 +897,7 @@ sealed class Engine : ApplicationContext
         {
             for (var i = 0; i < 150 && !_uiReady; i++) await Task.Delay(100);
             Check(_uiReady, "library window loaded");
-            Check(_items.Count == 2, $"library found {_items.Count} wallpapers (expected 2)");
+            Check(_items.Count == 3, $"library found {_items.Count} wallpapers (expected 3)");
             var probe = await _ui!.EvalPromiseAsync(WebHost.ReadResource("smoke.js"));
             Check(probe.ok, "library window clicks through every tab: " + probe.result);
 
@@ -867,6 +939,45 @@ sealed class Engine : ApplicationContext
             var paused = await WaitFor("String(window.__paused)", v => v == "\"true\"");
             Check(paused == "\"true\"", $"pause reaches the wallpaper ({paused})");
             Command("pause", null);
+
+            var sceneId = Str(_items.First(i => Str(i["type"]) == "scene")["id"])!;
+            Slot(key)["item"] = sceneId;
+            Refresh();
+            const string probeScene = """
+                (() => { const s = window.__scene; if (!s) return 'no scene ' + (window.__sceneError || '');
+                  s.render(); const gl = s.gl; gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+                  const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight, a = new Uint8Array(4), b = new Uint8Array(4);
+                  gl.readPixels(w >> 1, Math.floor(h * 0.7), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, a);
+                  gl.readPixels(w >> 1, Math.floor(h * 0.3), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, b);
+                  return 'top ' + [...a].slice(0, 3) + ' bottom ' + [...b].slice(0, 3); })()
+                """;
+            var colours = await WaitFor(probeScene, v => v.Contains("top"));
+            Check(colours.Contains("top 0,200,0 bottom 0,0,200"), $"packed scene drawn the right way up ({colours})");
+            if (_windows.TryGetValue(key, out win)) await win.CaptureAsync(Path.Combine(dir, "smoke-scene.png"));
+
+            // A real Wallpaper Engine scene with its shaders from WE's install, when WE is on this PC.
+            var beach = Library.WeInstall is { } we ? Path.Combine(we, "projects", "defaultprojects", "beach") : null;
+            if (beach is not null && Directory.Exists(beach))
+            {
+                ((JsonArray)_cfg["sources"]!).Add(Path.GetDirectoryName(beach));
+                Rescan();
+                Slot(key)["item"] = _items.FirstOrDefault(i => string.Equals(Str(i["path"]), beach, StringComparison.OrdinalIgnoreCase))?["id"]?.GetValue<string>();
+                Refresh();
+                var layers = await WaitFor("String(window.__sceneError || (window.__scene && window.__scene.layers.length) || '')", v => v.Length > 2);
+                Check(layers == "\"3\"", $"Wallpaper Engine's Beach scene loads all 3 layers ({layers})");
+                await Task.Delay(1500);
+                if (_windows.TryGetValue(key, out win))
+                {
+                    var beachInfo = await win.EvalAsync("""
+                        (() => { const s = window.__scene; s.render(); const gl = s.gl; gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+                          const p = new Uint8Array(4); gl.readPixels(gl.drawingBufferWidth >> 1, gl.drawingBufferHeight >> 1, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, p);
+                          return 'frames ' + (window.__frames || 0) + ' centre ' + [...p] + ' canvas ' + gl.drawingBufferWidth + 'x' + gl.drawingBufferHeight; })()
+                        """);
+                    Check(!beachInfo.Contains("frames 0 ") && !beachInfo.Contains("centre 0,0,0"), "Beach scene keeps drawing frames: " + beachInfo);
+                    await win.CaptureAsync(Path.Combine(dir, "smoke-we-scene.png"));
+                }
+            }
+            else report.Add("skipped: Wallpaper Engine sample scene (Wallpaper Engine not installed)");
 
             _ui.ShowPage("settings");
             await Task.Delay(500);

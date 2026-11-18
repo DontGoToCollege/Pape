@@ -20,7 +20,8 @@ sealed class WallpaperWindow : NativeWindow, IDisposable
     readonly bool _offscreen;
     CoreWebView2Controller? _ctl;
     Rectangle _bounds;
-    bool _disposed, _loading, _onPlayer, _muted, _paused, _fade;
+    bool _disposed, _loading, _muted, _paused, _fade;
+    string? _page;   // "player.html" or "scene.html" when showing one of Pape's own pages, else null
     bool? _sentPaused;
     JsonObject? _item;
     JsonObject _state = new();
@@ -29,6 +30,8 @@ sealed class WallpaperWindow : NativeWindow, IDisposable
     public string Key { get; }
     public IntPtr Host { get; }
     public bool WantsAudio { get; private set; }
+    public bool WantsPointer { get; private set; }
+    public Rectangle Bounds => _bounds;
     public string? ItemId => _item?["id"]?.GetValue<string>();
 
     /// <param name="host">Window behind the icons; zero puts the surface off-screen (self-check).</param>
@@ -82,22 +85,21 @@ sealed class WallpaperWindow : NativeWindow, IDisposable
             {
                 try
                 {
-                    if (JsonNode.Parse(e.WebMessageAsJson)?["type"]?.GetValue<string>() == "audio" && !WantsAudio)
-                    {
-                        WantsAudio = true;
-                        _engine.UpdateAudio();
-                    }
+                    var type = JsonNode.Parse(e.WebMessageAsJson)?["type"]?.GetValue<string>();
+                    if (type == "audio") WantsAudio = true;
+                    else if (type == "pointer") WantsPointer = true;
+                    _engine.UpdateAudio();
                 }
                 catch { /* not ours */ }
             };
-            core.NavigationStarting += (_, _) => { WantsAudio = false; _loading = true; };
+            core.NavigationStarting += (_, _) => { WantsAudio = WantsPointer = false; _loading = true; };
             core.NavigationCompleted += (_, e) =>
             {
                 _loading = false;
                 if (!e.IsSuccess) PortablePaths.Log($"wallpaper load failed ({e.WebErrorStatus}): {core.Source}");
                 _sentState = "";
                 _sentPaused = null;
-                if (_onPlayer) PostShow(); else PushState();
+                if (_page is not null) PostShow(); else PushState();
                 _engine.UpdateAudio();
             };
             core.NewWindowRequested += (_, e) => e.Handled = true;
@@ -167,18 +169,16 @@ sealed class WallpaperWindow : NativeWindow, IDisposable
         if (url != _shownUrl)
         {
             _shownUrl = url;
-            var type = _item["type"]?.GetValue<string>();
-            if (type is "image" or "video")
+            var page = _item["type"]?.GetValue<string>() switch
             {
-                if (_onPlayer && !_loading) { PostShow(); return; }
-                _onPlayer = true;
-                _ctl.CoreWebView2.Navigate(WebHost.Origin + "player.html");
-            }
-            else
-            {
-                _onPlayer = false;
-                _ctl.CoreWebView2.Navigate(url);
-            }
+                "image" or "video" => "player.html",
+                "scene" => "scene.html",
+                _ => null,
+            };
+            // the image/video player cross-fades to the next picture; a scene always starts on a fresh page
+            if (page == "player.html" && _page == page && !_loading) { PostShow(); return; }
+            _page = page;
+            _ctl.CoreWebView2.Navigate(page is null ? url : WebHost.Origin + page);
             return;
         }
         if (!_loading) PushState();
@@ -189,7 +189,7 @@ sealed class WallpaperWindow : NativeWindow, IDisposable
         if (_ctl is null || _item is null) return;
         var msg = (JsonObject)_state.DeepClone();
         msg["type"] = "show";
-        msg["item"] = new JsonObject { ["type"] = _item["type"]?.DeepClone(), ["url"] = _item["url"]?.DeepClone() };
+        msg["item"] = _item.DeepClone();
         msg["fade"] = _fade;
         msg["paused"] = _paused;
         Post(msg);

@@ -12,6 +12,8 @@ static class WebHost
     public const string Host = "app.pape.portable";
     public static readonly string Origin = $"https://{Host}/";
     public static string SourceHost(int index) => $"s{index}.pape.portable";
+    /// <summary>Wallpaper Engine's own assets folder (shaders, effects, materials) for scene wallpapers.</summary>
+    public const string AssetsHost = "we.pape.portable";
 
     static string? _shim;
     public static string Shim => _shim ??= ReadResource("shim.js");
@@ -41,6 +43,11 @@ static class WebHost
         for (var i = 0; i < sources.Count + 8; i++)
         {
             try { core.ClearVirtualHostNameToFolderMapping(SourceHost(i)); } catch { /* was not mapped */ }
+        }
+        if (Library.WeInstall is { } we && Directory.Exists(Path.Combine(we, "assets")))
+        {
+            try { core.SetVirtualHostNameToFolderMapping(AssetsHost, Path.Combine(we, "assets"), CoreWebView2HostResourceAccessKind.Allow); }
+            catch (Exception ex) { PortablePaths.Log("cannot map Wallpaper Engine assets: " + ex.Message); }
         }
         for (var i = 0; i < sources.Count; i++)
         {

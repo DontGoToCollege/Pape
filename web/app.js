@@ -1,7 +1,7 @@
 // Pape library window. Talks to the program (Engine.cs) through chrome.webview messages:
 //   in:  state {config, items, displays, ...}, status {...}, folder {path}, nav {page}
 //   out: ready, config {config}, rescan, cmd {name, arg}, pickFolder, open {path}, devtools {display}, reset
-const VERSION='0.1.1';
+const VERSION='0.2.0';
 
 const wv = window.chrome && window.chrome.webview;
 const send = m => wv && wv.postMessage(m);
@@ -297,8 +297,10 @@ function renderPanel() {
       it.supported ? plSel : null,
       it.source !== 'url' ? h('button', { onclick: () => send({ type: 'open', path: it.path }) }, 'Show in folder') : null,
       it.source === 'url' ? h('button', { onclick: () => removeUrl(it.id) }, 'Remove') : null),
+    it.note ? h('div', { class: 'notice' }, it.note) : null,
+    it.type === 'scene' && it.supported && !it.assets ? h('div', { class: 'notice' }, 'Wallpaper Engine isn’t installed here, so scenes that use its effects show their preview picture.') : null,
     it.supported ? propsPanel(it) : h('div', { class: 'notice' },
-      it.type === 'scene' ? 'Scene wallpapers come in Pape’s next phase. They need Pape’s own renderer for Wallpaper Engine scenes.'
+      it.type === 'scene' ? 'This scene’s files are missing (no scene.json or scene.pkg in its folder).'
         : 'Application wallpapers aren’t supported yet.'));
 }
 
