@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.0 (2026-11-18)
+
+Phase 2, step 5: **puppet animation**.
+
+- Puppet-warp scene layers move: Pape reads the model's skeleton and animations (the `MDLS` and `MDLA` parts of
+  the .mdl) and bends the picture's mesh every frame with the scene's chosen animation, speed and blend.
+  Tested on a Workshop character that blinks.
+- Layers attached to a parent object are placed relative to it (the blinking eyes sit on the face, clock and
+  date text groups move together).
+- Shaders: a wallpaper's own option switches now work in its arithmetic.
+- Not yet: animated 3D models, text and sound layers, SceneScript.
+- Self-check builds a one-bone puppet and confirms its animation moves it.
+
 ## 0.5.0 (2026-11-18)
 
 Phase 2, step 4: **bloom (glow)**.

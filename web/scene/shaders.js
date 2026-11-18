@@ -74,9 +74,18 @@ const INT_LITERAL = /(?<![\w.]|[eE][+-])(\d+)(?![\w.])/g;
 // Words GLSL ES 3.00 reserves that WE shaders use as plain names.
 const RESERVED = /\b(sample|input|output|filter|common|partition|active|packed|buffer|superp|resource|shared|noise)\b/g;
 
-function floatLiterals(code) {
-  // integer variables used in float maths ("sampleCount - 1.0") get an explicit float() outside int lines
-  const ints = [...new Set([...code.matchAll(/\bint\s+(\w+)\s*[=;]/g)].map(m => m[1]))];
+function floatLiterals(code, intMacros = [], arithmetic = []) {
+  // the shader's own combos are integers too; where they sit in arithmetic ("x / count * RESOLUTION") they
+  // become float(), while as function arguments or in comparisons they stay integers
+  if (arithmetic.length) {
+    const names = arithmetic.join('|');
+    const re = new RegExp(`(?<=[*/+\\-]\\s*)\\b(${names})\\b(?![\\w(])|\\b(${names})\\b(?=\\s*[*/+\\-])`, 'g');
+    code = code.split('\n').map(l => l.trimStart().startsWith('#') || INT_LINE.test(l) ? l : l.replace(re, (m, a, b) => `float(${a ?? b})`)).join('\n');
+  }
+  // integer variables used in float maths ("sampleCount - 1.0") get an explicit float() outside int lines;
+  // so do whole-number macros from the shader's own file ("#define RESOLUTION 64"), but not WE's headers,
+  // whose macros are blend-mode and format ids compared with ints
+  const ints = [...new Set([...[...code.matchAll(/\bint\s+(\w+)\s*[=;]/g)].map(m => m[1]), ...intMacros])];
   const intUse = ints.length ? new RegExp(`(?<![\\w.])(${ints.join('|')})(?![\\w(])`, 'g') : null;
   return code.split('\n').map(line => {
     const t = line.trimStart();
@@ -160,6 +169,8 @@ export async function loadShader(name, read, combosFromMaterial = {}) {
   const vsRaw = await read(`shaders/${name}.vert`);
   const fsRaw = await read(`shaders/${name}.frag`);
   if (vsRaw == null || fsRaw == null) throw new Error('missing shader ' + name);
+  const ownMacros = src => [...src.matchAll(/^\s*#\s*define\s+(\w+)\s+\d+\s*$/gm)].map(m => m[1]);
+  const ownCombos = src => [...src.matchAll(/\/\/\s*\[COMBO\]\s*\{[^}]*"combo"\s*:\s*"(\w+)"/g)].map(m => m[1]);
   seen.clear();
   const vs = await expand(vsRaw);
   seen.clear();
@@ -173,7 +184,8 @@ export async function loadShader(name, read, combosFromMaterial = {}) {
     const all = { ...combos, ...extra };
     const stage = (src, head) => {
       const lighting = head === FRAG_HEAD ? LIGHTING_V1 : '';
-      const cleaned = floatLiterals(stripComments(src)).replace(RESERVED, 'pape_$1')
+      const own = head === FRAG_HEAD ? fsRaw : vsRaw;
+      const cleaned = floatLiterals(stripComments(src), ownMacros(own), ownCombos(own)).replace(RESERVED, 'pape_$1')
         .replace(/^\s*#\s*require\s+LightingV1\b.*$/gm, lighting).replace(/^\s*#\s*require\b.*$/gm, '');
       const { code, defines } = fixConditionals(hoistUniforms(cleaned), Object.keys(all));
       return '#version 300 es\n' + PRELUDE + head +

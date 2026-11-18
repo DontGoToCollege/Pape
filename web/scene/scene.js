@@ -1,7 +1,8 @@
 // Renders Wallpaper Engine 2D scenes (orthographic camera): image layers with their materials and
 // effect chains, user-property bindings, sprite sheets, video textures, mouse parallax and audio.
 // Particles are simulated in particles.js; 3D scenes use a perspective camera and .mdl models (model.js).
-// Bloom runs WE's own four bloom passes. Not yet: puppet warp, skinned/animated models, shadows, text, sound,
+// Bloom runs WE's own four bloom passes; puppet-warp images bend on the CPU each frame. Not yet: skinned 3D
+// models, shadows, text, sound,
 // SceneScript (those layers are skipped).
 //
 // Conventions: the scene buffer is GL-native (y up, scene units 0..W, 0..H). Every per-layer buffer
@@ -331,6 +332,16 @@ export class Scene {
 
   drawQuad(buf = this.quad) {
     const gl = this.gl;
+    if (buf.ibo) {   // a puppet mesh: { vbo, ibo, count }
+      gl.bindBuffer(gl.ARRAY_BUFFER, buf.vbo);
+      gl.enableVertexAttribArray(0);
+      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 20, 0);
+      gl.enableVertexAttribArray(1);
+      gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 20, 12);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buf.ibo);
+      gl.drawElements(gl.TRIANGLES, buf.count, gl.UNSIGNED_SHORT, 0);
+      return;
+    }
     gl.bindBuffer(gl.ARRAY_BUFFER, buf);
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 20, 0);
@@ -421,6 +432,8 @@ export class Scene {
     this.clear = nums(this.value(g.clearcolor) ?? '0 0 0');
     this.layers = [];
     this.skipped = {};
+    // every object by id, drawn or not: children are placed relative to their parent
+    this.objects = new Map((scene.objects || []).map(o => [o.id, o]));
     for (const o of scene.objects || []) {
       // objects may list several kinds with the unused ones empty
       const kind = ['image', 'particle', 'model', 'text', 'sound', 'light'].find(k => o[k]) || 'other';
@@ -472,6 +485,10 @@ export class Scene {
       height = f ? f.h : tex0.height;
     }
     const layer = { o, model, base, width, height, effects: [], fullscreen: !!model.fullscreen };
+    if (model.puppet) {
+      try { layer.puppet = await this.puppet(model.puppet, o.animationlayers); }
+      catch (e) { warn('puppet', model.puppet, e.message); }
+    }
     layer.quad = this.buffer([
       -width / 2, -height / 2, 0, 0, 1,
       width / 2, -height / 2, 0, 1, 1,
@@ -508,6 +525,80 @@ export class Scene {
       layer.b = this.target(width, height);
     }
     return layer;
+  }
+
+  /**
+   * Puppet warp: the picture as a mesh (pixels from its centre, y up) bound to a 2D skeleton. Each frame the
+   * scene's animation layers pose the bones and every vertex moves with its weighted bones.
+   */
+  async puppet(file, layers = []) {
+    const bytes = await this.bytes(file);
+    if (!bytes) throw new Error('not found');
+    const mdl = readMdl(bytes);
+    const mesh = mdl.meshes[0];
+    if (!mesh || mesh.layout.boneIndices === undefined) throw new Error('no skinned mesh');
+    const L = mesh.layout, n = mesh.vertices.length * 4 / L.stride;
+    const f32 = new Float32Array(mesh.vertices.buffer), u32 = new Uint32Array(mesh.vertices.buffer), s = L.stride / 4;
+    const rest = new Float32Array(n * 3), uv = new Float32Array(n * 2), bones = new Uint32Array(n * 4), weights = new Float32Array(n * 4);
+    for (let i = 0; i < n; i++) {
+      rest.set(f32.subarray(i * s, i * s + 3), i * 3);
+      uv.set(f32.subarray(i * s + L.uv / 4, i * s + L.uv / 4 + 2), i * 2);
+      bones.set(u32.subarray(i * s + L.boneIndices / 4, i * s + L.boneIndices / 4 + 4), i * 4);
+      weights.set(L.boneWeights !== undefined ? f32.subarray(i * s + L.boneWeights / 4, i * s + L.boneWeights / 4 + 4) : [1, 0, 0, 0], i * 4);
+    }
+    const world = locals => { const w = []; mdl.bones.forEach((b, i) => { w[i] = b.parent >= 0 && w[b.parent] ? mul(w[b.parent], locals[i]) : locals[i]; }); return w; };
+    const restLocal = mdl.bones.map(b => b.local);
+    const inverseRest = world(restLocal).map(invert);
+    const anims = (layers || []).filter(l => l.visible !== false).map(l => ({ layer: l, anim: mdl.animations.find(a => a.id === l.animation) })).filter(x => x.anim);
+    if (!anims.length && mdl.animations[0] && !(layers || []).length) anims.push({ layer: { rate: 1, blend: 1 }, anim: mdl.animations[0] });
+    const gl = this.gl, vbo = gl.createBuffer(), ibo = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.STATIC_DRAW);
+    const geom = { vbo, ibo, count: mesh.indices.length };
+    return { mdl, n, rest, uv, bones, weights, restLocal, inverseRest, anims, world, geom, out: new Float32Array(n * 5) };
+  }
+
+  /** Poses the skeleton for the current time and uploads the bent mesh. */
+  skin(pp) {
+    let locals = pp.restLocal;
+    for (const { layer, anim } of pp.anims) {
+      const frames = Math.max(1, anim.frames);
+      let f = this.time * anim.fps * (nums(this.value(layer.rate) ?? 1)[0] || 1);
+      if (anim.mode === 'mirror') { f %= frames * 2; if (f > frames) f = frames * 2 - f; }
+      else if (anim.mode === 'single') f = Math.min(f, frames);
+      else f %= frames;
+      const i0 = Math.floor(f), i1 = Math.min(i0 + 1, frames), k = f - i0;
+      const blend = nums(this.value(layer.blend) ?? 1)[0];
+      locals = locals.map((rest, b) => {
+        const t = anim.tracks[b];
+        if (!t || t.length < (i1 + 1) * 9) return rest;
+        const v = j => t[i0 * 9 + j] + (t[i1 * 9 + j] - t[i0 * 9 + j]) * k;
+        const posed = modelMatrix([v(0), v(1), v(2)], [v(6), v(7), v(8)], [v(3), v(4), v(5)]);
+        return blend >= 1 ? posed : rest.map((r, j) => r + (posed[j] - r) * blend);
+      });
+    }
+    const skins = pp.world(locals).map((w, i) => mul(w, pp.inverseRest[i]));
+    const { n, rest, uv, bones, weights, out } = pp;
+    for (let i = 0; i < n; i++) {
+      const x = rest[i * 3], y = rest[i * 3 + 1], z = rest[i * 3 + 2];
+      let ox = 0, oy = 0, oz = 0, total = 0;
+      for (let j = 0; j < 4; j++) {
+        const w = weights[i * 4 + j];
+        if (!w) continue;
+        const m = skins[bones[i * 4 + j]];
+        if (!m) continue;
+        ox += w * (m[0] * x + m[4] * y + m[8] * z + m[12]);
+        oy += w * (m[1] * x + m[5] * y + m[9] * z + m[13]);
+        oz += w * (m[2] * x + m[6] * y + m[10] * z + m[14]);
+        total += w;
+      }
+      if (!total) { ox = x; oy = y; oz = z; total = 1; }
+      out[i * 5] = ox / total; out[i * 5 + 1] = oy / total; out[i * 5 + 2] = oz / total;
+      out[i * 5 + 3] = uv[i * 2]; out[i * 5 + 4] = uv[i * 2 + 1];
+    }
+    const gl = this.gl;
+    gl.bindBuffer(gl.ARRAY_BUFFER, pp.geom.vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, out, gl.DYNAMIC_DRAW);
   }
 
   async modelLayer(o) {
@@ -848,6 +939,15 @@ export class Scene {
     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
   }
 
+  /** Where an object's parent chain puts it (origin, scale and angles of each parent in turn). */
+  parentMatrix(o, depth = 0) {
+    const parent = o.parent != null && depth < 32 ? this.objects?.get(o.parent) : null;
+    if (!parent) return identity();
+    const v = (x, d) => nums(this.value(x) ?? d);
+    const [px, py, pz] = v(parent.origin, '0 0 0'), [sx, sy, sz] = v(parent.scale, '1 1 1'), [ax, ay, az] = v(parent.angles, '0 0 0');
+    return mul(this.parentMatrix(parent, depth + 1), modelMatrix([px ?? 0, py ?? 0, pz ?? 0], [sx ?? 1, sy ?? 1, sz ?? 1], [ax ?? 0, ay ?? 0, az ?? 0]));
+  }
+
   /** Adds the glow when the scene has bloom on; returns the buffer to show. */
   bloom(scene) {
     const g = this.general, passes = this.bloomPasses;
@@ -881,11 +981,14 @@ export class Scene {
       origin[2] ?? 0,
     ];
     const model = layer.fullscreen ? modelMatrix([W / 2, H / 2, 0], [1, 1, 1], [0, 0, 0])
-      : modelMatrix(pos, [scale[0] ?? 1, scale[1] ?? 1, scale[2] ?? 1], [angles[0] ?? 0, angles[1] ?? 0, angles[2] ?? 0]);
+      : mul(this.parentMatrix(o), modelMatrix(pos, [scale[0] ?? 1, scale[1] ?? 1, scale[2] ?? 1], [angles[0] ?? 0, angles[1] ?? 0, angles[2] ?? 0]));
     const flat = !layer.system && !layer.meshes;
     const mvp = mul(flat ? this.vp2d : this.vp, model);
     if (layer.system) { this.drawParticles(layer, model, mvp, dt); return; }
     if (layer.meshes) { this.drawModel(layer, model, mvp); return; }
+
+    if (layer.puppet) this.skin(layer.puppet);
+    const shape = layer.puppet?.geom ?? layer.quad;
 
     // object-level colour, alpha and brightness feed the image shader's own controls
     const alpha = Number(this.value(o.alpha) ?? 1);
@@ -909,7 +1012,7 @@ export class Scene {
       for (const p of layer.base) {
         if (!p) continue;
         tint(p);
-        this.drawWith(p, this.sceneRt, mvp, layer.quad, rtsFor({}), model, color4);
+        this.drawWith(p, this.sceneRt, mvp, shape, rtsFor({}), model, color4);
       }
       return;
     }
@@ -925,7 +1028,9 @@ export class Scene {
     for (const p of layer.base) {
       if (!p) continue;
       tint(p);
-      this.drawWith(p, prev, identity(), this.quad, n => full && n.startsWith('_rt_') ? full : rtsFor({})(n), identity(), color4, 'normal');
+      // a puppet mesh fills the layer buffer the way the plain rectangle would (top row first)
+      const fill = layer.puppet ? new Float32Array([2 / layer.width, 0, 0, 0, 0, -2 / layer.height, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]) : identity();
+      this.drawWith(p, prev, fill, layer.puppet ? shape : this.quad, n => full && n.startsWith('_rt_') ? full : rtsFor({})(n), identity(), color4, 'normal');
     }
     for (const effect of layer.effects) {
       if (this.value(effect.inst.visible) === false) continue;

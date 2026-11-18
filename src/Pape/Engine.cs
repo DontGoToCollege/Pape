@@ -835,8 +835,10 @@ sealed class Engine : ApplicationContext
         for (var i = 0; i < 64 * 64; i++) { pixels[i * 4 + (i < 64 * 32 ? 1 : 2)] = 200; pixels[i * 4 + 3] = 255; }
         byte[] Text(string t) => System.Text.Encoding.UTF8.GetBytes(t);
         File.WriteAllBytes(Path.Combine(src, "scene-test", "scene.pkg"), SmokePkg(
-            ("scene.json", Text("""{"general":{"clearcolor":"1 0 0","orthogonalprojection":{"width":64,"height":64}},"objects":[{"name":"square","image":"models/smoke.json","origin":"32 32 0","scale":"1 1 1","angles":"0 0 0"},{"name":"dots","image":null,"particle":"particles/smoke.json","origin":"4 4 0"},{"name":"tile","model":"models/tile.mdl","origin":"60 4 0","scale":"2 2 1"}]}""")),
+            ("scene.json", Text("""{"general":{"clearcolor":"1 0 0","orthogonalprojection":{"width":64,"height":64}},"objects":[{"name":"square","image":"models/smoke.json","origin":"32 32 0","scale":"1 1 1","angles":"0 0 0"},{"name":"dots","image":null,"particle":"particles/smoke.json","origin":"4 4 0"},{"name":"tile","model":"models/tile.mdl","origin":"60 4 0","scale":"2 2 1"},{"name":"puppet","image":"models/puppet.json","origin":"60 60 0","scale":"0.05 0.05 1","animationlayers":[{"animation":7,"rate":1,"blend":1,"visible":true}]}]}""")),
             ("models/tile.mdl", SmokeMdl()),
+            ("models/puppet.json", Text("""{"autosize":true,"material":"materials/smoke.json","puppet":"models/puppet.mdl"}""")),
+            ("models/puppet.mdl", SmokePuppetMdl()),
             // a small particle system in a corner, away from the pixels the colour check reads
             ("particles/smoke.json", Text("""{"material":"materials/dot.json","maxcount":50,"starttime":1,"emitter":[{"name":"sphererandom","rate":100,"distancemax":2,"directions":"1 1 0"}],"initializer":[{"name":"lifetimerandom","min":5,"max":5},{"name":"sizerandom","min":2,"max":2}],"operator":[{"name":"movement"}],"renderer":[{"name":"sprite"}]}""")),
             ("materials/dot.json", Text("""{"passes":[{"blending":"translucent"}]}""")),
@@ -893,6 +895,48 @@ sealed class Engine : ApplicationContext
         w.Write(12);
         foreach (var i in new ushort[] { 0, 1, 2, 0, 2, 3 }) w.Write(i);
         w.Write((byte)0);
+        return ms.ToArray();
+    }
+
+    /// <summary>
+    /// A puppet-warp .mdl: one 64x64 quad bound to one bone, and animation 7 (1 fps, 2 frames) that slides the
+    /// bone 10 units right at frame 1. Laid out as Wallpaper Engine writes them (see docs\SCENE-FORMAT.md).
+    /// </summary>
+    static byte[] SmokePuppetMdl()
+    {
+        using var ms = new MemoryStream();
+        using var w = new BinaryWriter(ms);
+        void Ints(params int[] v) { foreach (var x in v) w.Write(x); }
+        void Floats(params float[] v) { foreach (var x in v) w.Write(x); }
+        const int flags = 9 | 0x800000 | 0x1000000;   // position, bone indices, bone weights, uv
+        w.Write("MDLV0023\0"u8);
+        Ints(flags, 1, 1);
+        w.Write("materials/smoke.json\0"u8);
+        Ints(0);
+        Floats(0, 0, 0, 0, 0, 0);
+        Ints(flags, 4 * 52);
+        foreach (var (x, y, u, v) in new[] { (-32f, -32f, 0f, 1f), (32f, -32f, 1f, 1f), (32f, 32f, 1f, 0f), (-32f, 32f, 0f, 0f) })
+        {
+            Floats(x, y, 0);
+            Ints(0, 0, 0, 0);
+            Floats(1, 0, 0, 0);
+            Floats(u, v);
+        }
+        Ints(12);
+        foreach (var i in new ushort[] { 0, 1, 2, 0, 2, 3 }) w.Write(i);
+        w.Write((byte)0);
+        w.Write("MDLS0004\0"u8);
+        Ints(0, 1);                               // end offset (not used by Pape), one bone
+        w.Write("\0"u8);
+        Ints(1, -1, 64);
+        Floats(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
+        w.Write("{}\0"u8);
+        w.Write("MDLA0006\0"u8);
+        Ints(0, 1, 7, 0);                         // end offset, one animation, id 7
+        w.Write("slide\0loop\0"u8);
+        Floats(1);
+        Ints(2, 0, 1, 0, 3 * 36);                 // 2 frames, one bone track of 3 frames
+        foreach (var x in new[] { 0f, 10f, 0f }) Floats(x, 0, 0, 0, 0, 0, 1, 1, 1);
         return ms.ToArray();
     }
 
@@ -979,6 +1023,13 @@ sealed class Engine : ApplicationContext
             Check(dots != "\"0\"" && dots != "null", $"packed scene's particle system is running ({dots} particles)");
             var meshes = await WaitFor("String(window.__scene?.layers.find(l => l.meshes)?.meshes.length || 0)", v => v != "\"0\"");
             Check(meshes == "\"1\"", $"packed scene's .mdl model loaded ({meshes} mesh)");
+            const string probePuppet = """
+                (() => { const s = window.__scene, l = s?.layers.find(l => l.puppet); if (!l) return 'no puppet';
+                  const p = l.puppet, t = s.time; s.time = 0; s.skin(p); const a = p.out[0];
+                  s.time = 1; s.skin(p); const b = p.out[0]; s.time = t; return 'moved ' + Math.round(b - a); })()
+                """;
+            var puppet = await WaitFor(probePuppet, v => v.Contains("moved"));
+            Check(puppet == "\"moved 10\"", $"packed scene's puppet bends with its animation ({puppet})");
             if (_windows.TryGetValue(key, out win)) await win.CaptureAsync(Path.Combine(dir, "smoke-scene.png"));
 
             // A real Wallpaper Engine scene with its shaders from WE's install, when WE is on this PC.

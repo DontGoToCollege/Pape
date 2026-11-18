@@ -1,7 +1,7 @@
 // Pape library window. Talks to the program (Engine.cs) through chrome.webview messages:
 //   in:  state {config, items, displays, ...}, status {...}, folder {path}, nav {page}
 //   out: ready, config {config}, rescan, cmd {name, arg}, pickFolder, open {path}, devtools {display}, reset
-const VERSION='0.5.0';
+const VERSION='0.6.0';
 
 const wv = window.chrome && window.chrome.webview;
 const send = m => wv && wv.postMessage(m);
