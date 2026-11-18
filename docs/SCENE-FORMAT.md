@@ -43,3 +43,22 @@ width/height, one unused int32. Then `TEXB0001..4\0`, image count, (v3+) image f
 otherwise each mip is a PNG/JPEG file), (v4) is-mp4 flag. Per image: mip count; per mip: width, height,
 (v2+) LZ4 flag and unpacked size, byte count, bytes (LZ4 block format when flagged). Sprite sheets end with
 `TEXS0001..3\0`, frame count, ((v3) width, height), then per frame image index, seconds, x, y, w, wy, hx, h.
+
+## Particles
+A particle object points at a particle json: `material`, `maxcount`, `starttime` (seconds to run ahead),
+`animationmode` (sequence / randomframe for sprite-sheet textures), `sequencemultiplier`, `controlpoint[]`
+(`flags` 1 = follows the mouse, `offset`), and four lists, each entry with a `name`:
+- `emitter`: `sphererandom` (random point in a sphere stretched per axis by `directions`, between `distancemin`
+  and `distancemax`, moving outward at `speedmin..speedmax`) or `boxrandom`; `rate` per second, `instantaneous`,
+  `delay`, `duration`, periodic on/off times, `sign`, `controlpoint`.
+- `initializer`: lifetime, size (full width), colour (0..255), alpha, velocity, rotation, angular velocity,
+  turbulent velocity, position offset, HSV colour; `min`/`max` with an optional `exponent`.
+- `operator`: movement (gravity, drag), alpha fade (in/out fractions of the lifetime), size/colour/alpha change
+  over the lifetime, oscillate position/alpha/size (between `scalemin` and `scalemax`), angular movement,
+  turbulence, control point attract, vortex, cap velocity, reduce movement near a control point.
+- `renderer`: `sprite`, `spritetrail` (stretched along the velocity: `length`, `minlength`, `maxlength`), rope.
+The object's `instanceoverride` multiplies rate, count, lifetime, size, speed and alpha and tints by `colorn`.
+WE's particle shaders have a path without geometry shaders: each quad corner carries the particle's centre
+(`a_Position`), corner/rotation/size (`a_TexCoordVec4`), x/y rotation (`a_TexCoordC2`), `a_Color` and
+velocity/life (`a_TexCoordVec4C1`, with the `THICKFORMAT` combo), plus `g_RenderVar0` (trail lengths) and
+`g_RenderVar1` (sprite frame size and count).

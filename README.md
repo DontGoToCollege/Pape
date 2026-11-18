@@ -9,7 +9,8 @@ Pape is offline and portable: one `.exe`, no account, no store, and your setting
 - **Plays Wallpaper Engine wallpapers** of the *video* and *web* kinds straight from Steam's Workshop folder
   or your own folders, including their settings (colours, sliders, switches) and music-reactive bars.
   2D *scene* wallpapers play too, with their layers, effects and settings (Wallpaper Engine must be installed on the
-  same PC for scenes that use its effects). Particles and 3D scenes come later; 3D scenes show their preview picture.
+  same PC for scenes that use its effects), including their particles (snow, rain, fire, sparkles and more).
+  3D scenes come later and show their preview picture until then.
 - **Library:** search, filter by type, sort, favourites, and open any web page by its address.
 - **Per-wallpaper look:** alignment (cover, fit, stretch, centre), position, zoom, flip, brightness, contrast,
   saturation, hue, video speed and volume, plus saved **presets**.

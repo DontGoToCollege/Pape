@@ -117,4 +117,5 @@ Data lives in `Pape-Data\` next to the exe (portable).
   from the wallpaper, desktop icon opacity, media integration (now-playing info), virtual desktops, screenshots,
   per-monitor "pause all" vs "pause this display" choice (Pape pauses only the affected display).
 - **0.2.0:** Phase 2 step 1: 2D scenes (image layers, materials, effects, user settings, parallax, audio).
-  Next: particles, then 3D scenes/models, puppet warp, text, sound, bloom, SceneScript.
+- **0.3.0:** Phase 2 step 2: particles. Next: 3D scenes/models, puppet warp, text, sound, bloom, SceneScript,
+  child particle systems.

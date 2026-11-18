@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.0 (2026-11-17)
+
+Phase 2, step 2: **particles** in scene wallpapers.
+
+- Particle systems (snow, rain, fire, embers, leaves, bubbles, sparkles, stars, smoke and so on) run in scenes,
+  drawn with each material's own Wallpaper Engine particle shader so colours, tints and soft edges match.
+- Emitters, the common initializers and operators, sprite-sheet animation, trails (rain streaks),
+  mouse-following control points and the scene's per-object overrides (count, rate, size, speed, alpha, colour).
+- Objects that list several kinds (image, model, particle) with only one filled in are read correctly.
+- Not yet: child particle systems (such as firework bursts), ropes (drawn as sprites), boids.
+- Self-check now also runs a small particle system in its test scene.
+
 ## 0.2.0 (2026-11-17)
 
 Phase 2, step 1: Wallpaper Engine **scene** wallpapers (2D).

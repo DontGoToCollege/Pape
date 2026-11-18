@@ -835,7 +835,10 @@ sealed class Engine : ApplicationContext
         for (var i = 0; i < 64 * 64; i++) { pixels[i * 4 + (i < 64 * 32 ? 1 : 2)] = 200; pixels[i * 4 + 3] = 255; }
         byte[] Text(string t) => System.Text.Encoding.UTF8.GetBytes(t);
         File.WriteAllBytes(Path.Combine(src, "scene-test", "scene.pkg"), SmokePkg(
-            ("scene.json", Text("""{"general":{"clearcolor":"1 0 0","orthogonalprojection":{"width":64,"height":64}},"objects":[{"name":"square","image":"models/smoke.json","origin":"32 32 0","scale":"1 1 1","angles":"0 0 0"}]}""")),
+            ("scene.json", Text("""{"general":{"clearcolor":"1 0 0","orthogonalprojection":{"width":64,"height":64}},"objects":[{"name":"square","image":"models/smoke.json","origin":"32 32 0","scale":"1 1 1","angles":"0 0 0"},{"name":"dots","image":null,"particle":"particles/smoke.json","origin":"4 4 0"}]}""")),
+            // a small particle system in a corner, away from the pixels the colour check reads
+            ("particles/smoke.json", Text("""{"material":"materials/dot.json","maxcount":50,"starttime":1,"emitter":[{"name":"sphererandom","rate":100,"distancemax":2,"directions":"1 1 0"}],"initializer":[{"name":"lifetimerandom","min":5,"max":5},{"name":"sizerandom","min":2,"max":2}],"operator":[{"name":"movement"}],"renderer":[{"name":"sprite"}]}""")),
+            ("materials/dot.json", Text("""{"passes":[{"blending":"translucent"}]}""")),
             ("models/smoke.json", Text("""{"autosize":true,"material":"materials/smoke.json"}""")),
             ("materials/smoke.json", Text("""{"passes":[{"shader":"smoke","blending":"translucent","textures":["smoke"],"constantshadervalues":{"mult":1}}]}""")),
             ("materials/smoke.tex", SmokeTex(64, 64, pixels)),
@@ -953,6 +956,8 @@ sealed class Engine : ApplicationContext
                 """;
             var colours = await WaitFor(probeScene, v => v.Contains("top"));
             Check(colours.Contains("top 0,200,0 bottom 0,0,200"), $"packed scene drawn the right way up ({colours})");
+            var dots = await WaitFor("String(window.__scene?.layers.find(l => l.system)?.system.particles.length || 0)", v => v != "\"0\"");
+            Check(dots != "\"0\"" && dots != "null", $"packed scene's particle system is running ({dots} particles)");
             if (_windows.TryGetValue(key, out win)) await win.CaptureAsync(Path.Combine(dir, "smoke-scene.png"));
 
             // A real Wallpaper Engine scene with its shaders from WE's install, when WE is on this PC.
