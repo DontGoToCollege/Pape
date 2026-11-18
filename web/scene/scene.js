@@ -1,6 +1,7 @@
 // Renders Wallpaper Engine 2D scenes (orthographic camera): image layers with their materials and
 // effect chains, user-property bindings, sprite sheets, video textures, mouse parallax and audio.
-// Particles are simulated in particles.js. Not yet: 3D models, puppet warp, text, sound, bloom,
+// Particles are simulated in particles.js; 3D scenes use a perspective camera and .mdl models (model.js).
+// Not yet: puppet warp, skinned/animated models, shadows, text, sound, bloom,
 // SceneScript (those layers are skipped).
 //
 // Conventions: the scene buffer is GL-native (y up, scene units 0..W, 0..H). Every per-layer buffer
@@ -9,14 +10,26 @@
 import { loadShader } from './shaders.js';
 import { readPkg, readTex, TEX, TEX_FLAG } from './formats.js';
 import { ParticleSystem, PARTICLE_VS, PARTICLE_FS, VERTEX, ATTRIBUTES } from './particles.js';
+import { readMdl } from './model.js';
 
 const warn = (...a) => console.warn('[scene]', ...a);
 
 /* ---------------- values ---------------- */
 
+// WE's JSON files sometimes carry line and block comments and trailing commas.
 function parseJson(text) {
   text = text.replace(/^﻿/, '');
-  try { return JSON.parse(text); } catch { return JSON.parse(text.replace(/,\s*([}\]])/g, '$1')); }
+  try { return JSON.parse(text); } catch { /* lenient read below */ }
+  let out = '', inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inString) { out += c; if (c === '\\') out += text[++i] ?? ''; else if (c === '"') inString = false; continue; }
+    if (c === '"') { inString = true; out += c; continue; }
+    if (c === '/' && text[i + 1] === '/') { while (i < text.length && text[i] !== '\n') i++; out += '\n'; continue; }
+    if (c === '/' && text[i + 1] === '*') { i = text.indexOf('*/', i + 2); if (i < 0) break; i++; continue; }
+    out += c;
+  }
+  return JSON.parse(out.replace(/,\s*([}\]])/g, '$1'));
 }
 
 const nums = v => typeof v === 'number' ? [v] : typeof v === 'boolean' ? [+v]
@@ -47,6 +60,24 @@ function invert(m) {
     (a10 * b[10] - a11 * b[8] + a13 * b[6]) * d, (a01 * b[8] - a00 * b[10] - a03 * b[6]) * d, (a30 * b[4] - a31 * b[2] + a33 * b[0]) * d, (a21 * b[2] - a20 * b[4] - a23 * b[0]) * d,
     (a11 * b[7] - a10 * b[9] - a12 * b[6]) * d, (a00 * b[9] - a01 * b[7] + a02 * b[6]) * d, (a31 * b[1] - a30 * b[3] - a32 * b[0]) * d, (a20 * b[3] - a21 * b[1] + a22 * b[0]) * d,
   ]);
+}
+const sub3 = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const cross3 = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const norm3 = a => { const l = Math.hypot(...a) || 1; return a.map(x => x / l); };
+const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+function perspective(fovDeg, aspect, near, far) {
+  const f = 1 / Math.tan(fovDeg * Math.PI / 360), m = new Float32Array(16);
+  m[0] = f / aspect; m[5] = f; m[10] = (far + near) / (near - far); m[11] = -1; m[14] = 2 * far * near / (near - far);
+  return m;
+}
+function lookAt(eye, center, up) {
+  const z = norm3(sub3(eye, center)), x = norm3(cross3(up, z)), y = cross3(z, x);
+  return new Float32Array([x[0], y[0], z[0], 0, x[1], y[1], z[1], 0, x[2], y[2], z[2], 0, -dot3(x, eye), -dot3(y, eye), -dot3(z, eye), 1]);
+}
+/** upper 3x3 of the inverse transpose: turns normals the way the model matrix turns surfaces */
+function normalMatrix(m) {
+  const i = invert(m);
+  return new Float32Array([i[0], i[4], i[8], i[1], i[5], i[9], i[2], i[6], i[10]]);
 }
 function ortho(w, h) {
   const m = identity();
@@ -173,6 +204,8 @@ export class Scene {
     gl.bindAttribLocation(prog, 3, 'a_TexCoordVec4');
     gl.bindAttribLocation(prog, 4, 'a_TexCoordC2');
     gl.bindAttribLocation(prog, 5, 'a_TexCoordVec4C1');
+    gl.bindAttribLocation(prog, 6, 'a_Normal');
+    gl.bindAttribLocation(prog, 7, 'a_Tangent4');
     gl.linkProgram(prog);
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(`${name}: ${gl.getProgramInfoLog(prog)}`);
     const uniforms = new Map();
@@ -183,7 +216,7 @@ export class Scene {
     return { prog, uniforms };
   }
 
-  target(width, height) {
+  target(width, height, depth = false) {
     const gl = this.gl;
     width = Math.max(1, Math.round(width));
     height = Math.max(1, Math.round(height));
@@ -195,7 +228,14 @@ export class Scene {
     const fbo = gl.createFramebuffer();
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
-    return { tex, fbo, width, height, format: TEX.RGBA8888 };
+    let rb = null;
+    if (depth) {
+      rb = gl.createRenderbuffer();
+      gl.bindRenderbuffer(gl.RENDERBUFFER, rb);
+      gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, width, height);
+      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, rb);
+    }
+    return { tex, fbo, rb, width, height, format: TEX.RGBA8888 };
   }
 
   /* ---------- textures ---------- */
@@ -352,7 +392,8 @@ export class Scene {
     const userKeys = {};
     for (const src of [matPass.usershadervalues, inst.usershadervalues])
       for (const [prop, key] of Object.entries(src || {})) userKeys[key] = prop;
-    return { program, names, textures, binds, values, userKeys, blending: matPass.blending || 'normal' };
+    return { program, names, textures, binds, values, userKeys, blending: matPass.blending || 'normal',
+      depthtest: matPass.depthtest, depthwrite: matPass.depthwrite, cullmode: matPass.cullmode };
   }
 
   /* ---------- building the scene ---------- */
@@ -360,9 +401,22 @@ export class Scene {
   async build(scene) {
     const g = scene.general || {};
     const proj = g.orthogonalprojection;
-    if (!proj) throw new Error('3D scenes are not supported yet');
-    this.width = proj.auto ? this.canvas.width : proj.width;
-    this.height = proj.auto ? this.canvas.height : proj.height;
+    // without an orthographic projection the scene is 3D: a perspective camera, maybe moving along paths
+    this.is3D = !proj;
+    if (this.is3D) {
+      this.width = this.canvas.width;
+      this.height = this.canvas.height;
+      this.cam = scene.camera || {};
+      this.paths = [];
+      for (const f of this.cam.paths || []) for (const path of (await this.json(f))?.paths || []) if (path.transforms?.length) this.paths.push(path);
+    } else {
+      this.width = proj.auto ? this.canvas.width : proj.width;
+      this.height = proj.auto ? this.canvas.height : proj.height;
+    }
+    this.lights = (scene.objects || []).filter(o => o.light).slice(0, 4).map(o => ({
+      pos: nums(this.value(o.origin) ?? '0 0 0'), color: nums(this.value(o.color) ?? '1 1 1'),
+      intensity: nums(this.value(o.intensity) ?? 1)[0], radius: nums(this.value(o.radius) ?? 1000)[0],
+    }));
     this.general = g;
     this.clear = nums(this.value(g.clearcolor) ?? '0 0 0');
     this.layers = [];
@@ -370,10 +424,11 @@ export class Scene {
     for (const o of scene.objects || []) {
       // objects may list several kinds with the unused ones empty
       const kind = ['image', 'particle', 'model', 'text', 'sound', 'light'].find(k => o[k]) || 'other';
-      const supported = kind === 'image' && o.image || kind === 'particle' && o.particle;
+      if (kind === 'light') continue;   // read above
+      const supported = kind === 'image' || kind === 'particle' || kind === 'model';
       if (!supported) { this.skipped[kind] = (this.skipped[kind] || 0) + 1; continue; }
       try {
-        const layer = kind === 'particle' ? await this.particleLayer(o) : await this.layer(o);
+        const layer = kind === 'particle' ? await this.particleLayer(o) : kind === 'model' ? await this.modelLayer(o) : await this.layer(o);
         if (layer) this.layers.push(layer);
       } catch (e) {
         warn('layer', o.name, e.message);
@@ -441,6 +496,87 @@ export class Scene {
     return layer;
   }
 
+  async modelLayer(o) {
+    const bytes = await this.bytes(o.model);
+    if (!bytes) throw new Error('model not found ' + o.model);
+    const gl = this.gl, meshes = [];
+    for (const mesh of readMdl(bytes).meshes) {
+      const material = await this.json(mesh.material).catch(e => { warn('model material', mesh.material, e.message); return null; });
+      const passes = [];
+      for (const mp of material?.passes || []) { const p = await this.pass(mp, {}); if (p) passes.push(p); }
+      if (!passes.length) { warn('model material', mesh.material); continue; }
+      const vbo = gl.createBuffer(), ibo = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+      gl.bufferData(gl.ARRAY_BUFFER, mesh.vertices, gl.STATIC_DRAW);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.STATIC_DRAW);
+      meshes.push({ layout: mesh.layout, passes, vbo, ibo, count: mesh.indices.length });
+    }
+    return meshes.length ? { o, meshes } : null;
+  }
+
+  drawModel(layer, model, mvp) {
+    const gl = this.gl, L = this.lights;
+    const light = i => L[i] || { pos: [0, 0, 0], color: [0, 0, 0], intensity: 0, radius: 1 };
+    const lightUniforms = {
+      g_LightsPosition: [0, 1, 2, 3].flatMap(i => light(i).pos.slice(0, 3)),
+      g_LightsColorRadius: [0, 1, 2, 3].flatMap(i => [...light(i).color.slice(0, 3).map(c => c * light(i).intensity), light(i).radius]),
+      // three lights' colour, with the fourth light's colour spread over their w components
+      g_LightsColorPremultiplied: [0, 1, 2].flatMap(i => [...light(i).color.slice(0, 3).map(c => c * light(i).intensity), (light(3).color[i] ?? 0) * light(3).intensity]),
+    };
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.sceneRt.fbo);
+    gl.viewport(0, 0, this.sceneRt.width, this.sceneRt.height);
+    for (const mesh of layer.meshes) {
+      const { layout } = mesh;
+      for (const p of mesh.passes) {
+        gl.useProgram(p.program.prog);
+        const tex = this.bindTextures(p, () => null);
+        this.setUniforms(p, {
+          ...tex, ...lightUniforms,
+          g_ModelViewProjectionMatrix: mvp, g_ModelMatrix: model, g_ModelMatrixInverse: invert(model),
+          g_NormalModelMatrix: normalMatrix(model), g_ViewProjectionMatrix: this.vp, g_EyePosition: this.eye,
+        }, this.sceneRt);
+        if (p.depthtest === 'disabled') gl.disable(gl.DEPTH_TEST); else { gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL); }
+        gl.depthMask(p.depthwrite !== 'disabled');
+        if (p.cullmode === 'normal') { gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK); } else gl.disable(gl.CULL_FACE);
+        this.blend(p.blending);
+        gl.bindBuffer(gl.ARRAY_BUFFER, mesh.vbo);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.ibo);
+        const at = (loc, size, off) => { gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, gl.FLOAT, false, layout.stride, off); };
+        at(0, 3, layout.position);
+        at(1, 2, layout.uv);
+        at(3, layout.uv2 !== undefined ? 4 : 2, layout.uv);   // a_TexCoordVec4: both uv sets for lightmapped shaders
+        if (layout.normal !== undefined) at(6, 3, layout.normal); else { gl.disableVertexAttribArray(6); gl.vertexAttrib3f(6, 0, 0, 1); }
+        if (layout.tangent !== undefined) at(7, 4, layout.tangent); else { gl.disableVertexAttribArray(7); gl.vertexAttrib4f(7, 1, 0, 0, 1); }
+        gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0);
+      }
+    }
+    for (const loc of [3, 6, 7]) gl.disableVertexAttribArray(loc);
+    gl.disable(gl.DEPTH_TEST);
+    gl.disable(gl.CULL_FACE);
+    gl.depthMask(true);
+  }
+
+  /** Camera for 3D scenes: the scene's camera, or a point along its camera paths (they play in turn, looping). */
+  camera() {
+    const c = this.cam;
+    let eye = nums(c.eye ?? '0 0 1'), center = nums(c.center ?? '0 0 0'), up = nums(c.up ?? '0 1 0');
+    const total = this.paths.reduce((s, p) => s + (p.duration || 1), 0);
+    if (total > 0) {
+      let t = this.time % total, path = this.paths[0];
+      for (const p of this.paths) { if (t <= (p.duration || 1)) { path = p; break; } t -= p.duration || 1; }
+      const keys = path.transforms;
+      let a = keys[0], b = keys[keys.length - 1];
+      for (let i = 0; i < keys.length - 1; i++) if (t >= (keys[i].timestamp ?? 0) && t <= (keys[i + 1].timestamp ?? 0)) { a = keys[i]; b = keys[i + 1]; break; }
+      const span = (b.timestamp ?? 0) - (a.timestamp ?? 0);
+      const u = span > 0 ? Math.min(1, Math.max(0, (t - (a.timestamp ?? 0)) / span)) : 0;
+      const k = u * u * (3 - 2 * u);   // ease in and out
+      const mix = (x, y) => nums(x).map((v, i) => v + ((nums(y)[i] ?? v) - v) * k);
+      eye = mix(a.eye, b.eye); center = mix(a.center, b.center); up = mix(a.up, b.up);
+    }
+    return { eye, center, up };
+  }
+
   async particleLayer(o) {
     const def = await this.json(o.particle);
     if (!def) throw new Error('particle file not found ' + o.particle);
@@ -474,8 +610,8 @@ export class Scene {
       this.setUniforms(own, {
         ...tex,
         g_ModelViewProjectionMatrix: mvp, g_ModelMatrix: model, g_ModelMatrixInverse: invert(model), g_ViewProjectionMatrix: this.vp,
-        g_OrientationRight: [1, 0, 0], g_OrientationUp: [0, 1, 0], g_OrientationForward: [0, 0, 1],
-        g_ViewRight: [1, 0, 0], g_ViewUp: [0, 1, 0], g_EyePosition: [this.width / 2, this.height / 2, 10000],
+        g_OrientationRight: this.camRight, g_OrientationUp: this.camUp, g_OrientationForward: this.camForward,
+        g_ViewRight: this.camRight, g_ViewUp: this.camUp, g_EyePosition: this.eye,
         g_RenderVar0: [nums(r.length)[0] ?? 0.05, nums(r.maxlength)[0] ?? 1000, nums(r.minlength)[0] ?? 0, 0],
         g_RenderVar1: [fw, fh, f?.length || 1, f ? f[0].h / f[0].w : 1],
       }, this.sceneRt);
@@ -504,12 +640,16 @@ export class Scene {
 
   resize() {
     const c = this.canvas, gl = this.gl;
+    if (this.is3D) { this.width = c.width; this.height = c.height; }
     // the scene renders at the screen's pixel density, cropped to cover the screen like WE does
     const s = Math.max(c.width / this.width, c.height / this.height, 0.25);
-    if (this.sceneRt && this.scale === s) return;
+    if (this.sceneRt && this.scale === s && this.sceneRt.width === Math.round(this.width * s) && this.sceneRt.height === Math.round(this.height * s)) return;
     this.scale = s;
-    if (this.sceneRt) { gl.deleteTexture(this.sceneRt.tex); gl.deleteFramebuffer(this.sceneRt.fbo); gl.deleteTexture(this.fullRt.tex); gl.deleteFramebuffer(this.fullRt.fbo); }
-    this.sceneRt = this.target(this.width * s, this.height * s);
+    if (this.sceneRt) {
+      gl.deleteTexture(this.sceneRt.tex); gl.deleteFramebuffer(this.sceneRt.fbo); gl.deleteRenderbuffer(this.sceneRt.rb);
+      gl.deleteTexture(this.fullRt.tex); gl.deleteFramebuffer(this.fullRt.fbo);
+    }
+    this.sceneRt = this.target(this.width * s, this.height * s, true);
     this.fullRt = this.target(this.width * s, this.height * s);
   }
 
@@ -527,7 +667,7 @@ export class Scene {
         for (let i = 0; i < arr.length; i++) arr[i] = a[i] ?? (n === 4 && i % 4 === 3 ? 1 : a.length === 1 ? a[0] : 0);
         gl[`uniform${n}fv`](info.loc, arr);
       } else if (info.type === gl.FLOAT_MAT4) gl.uniformMatrix4fv(info.loc, false, a);
-      else if (info.type === gl.FLOAT_MAT3) gl.uniformMatrix3fv(info.loc, false, a);
+      else if (info.type === gl.FLOAT_MAT3) gl.uniformMatrix3fv(info.loc, false, a.length === 16 ? [a[0], a[1], a[2], a[4], a[5], a[6], a[8], a[9], a[10]] : a);
       else if (info.type === gl.INT || info.type === gl.BOOL) gl.uniform1i(info.loc, a[0] | 0);
     };
     for (const [k, v] of Object.entries(this.globals)) put(k, v);
@@ -596,7 +736,20 @@ export class Scene {
     const g = this.general;
     if (this.canvas.width !== this.lastW || this.canvas.height !== this.lastH) { this.lastW = this.canvas.width; this.lastH = this.canvas.height; this.resize(); }
     const W = this.width, H = this.height;
-    this.vp = ortho(W, H);
+    this.vp2d = ortho(W, H);
+    if (this.is3D) {
+      const { eye, center, up } = this.camera();
+      const g3 = this.general;
+      this.vp = mul(perspective(nums(this.value(g3.fov) ?? 50)[0] || 50, W / H, nums(g3.nearz ?? 0.01)[0], nums(g3.farz ?? 10000)[0]), lookAt(eye, center, up));
+      this.eye = eye;
+      this.camForward = norm3(sub3(center, eye));
+      this.camRight = norm3(cross3(this.camForward, up));
+      this.camUp = cross3(this.camRight, this.camForward);
+    } else {
+      this.vp = this.vp2d;
+      this.eye = [W / 2, H / 2, 10000];
+      this.camForward = [0, 0, -1]; this.camRight = [1, 0, 0]; this.camUp = [0, 1, 0];
+    }
     const dt = Math.min(0.1, Math.max(0, this.time - (this.lastTime ?? this.time)));
     this.lastTime = this.time;
     const d = new Date();
@@ -612,7 +765,10 @@ export class Scene {
       g_PointerPosition: this.pointer,
       g_PointerPositionLast: this.pointer,
       g_Screen: [this.canvas.width, this.canvas.height, this.canvas.width / this.canvas.height],
-      g_EyePosition: [0, 0, 0],
+      g_EyePosition: this.eye,
+      // for the stand-in of WE's generated lighting code (shaders.js LIGHTING_V1)
+      pape_LightsPosition: [0, 1, 2, 3].flatMap(i => (this.lights[i]?.pos ?? [0, 0, 0]).slice(0, 3)),
+      pape_LightsColorRadius: [0, 1, 2, 3].flatMap(i => { const l = this.lights[i]; return l ? [...l.color.slice(0, 3).map(c => c * l.intensity), l.radius] : [0, 0, 0, 1]; }),
       g_LightAmbientColor: nums(this.value(g.ambientcolor) ?? '0.3 0.3 0.3'),
       g_LightSkylightColor: nums(this.value(g.skylightcolor) ?? '0.3 0.3 0.3'),
       g_AudioSpectrum16Left: l16, g_AudioSpectrum16Right: r16,
@@ -630,10 +786,9 @@ export class Scene {
     const scene = this.sceneRt;
     gl.bindFramebuffer(gl.FRAMEBUFFER, scene.fbo);
     gl.viewport(0, 0, scene.width, scene.height);
-    if (this.value(g.clearenabled) !== false) {
-      gl.clearColor(this.clear[0] ?? 0, this.clear[1] ?? 0, this.clear[2] ?? 0, 1);
-      gl.clear(gl.COLOR_BUFFER_BIT);
-    }
+    gl.depthMask(true);
+    gl.clearColor(this.clear[0] ?? 0, this.clear[1] ?? 0, this.clear[2] ?? 0, 1);
+    gl.clear(this.value(g.clearenabled) !== false ? gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT : gl.DEPTH_BUFFER_BIT);
 
     // where the pointer is in scene units (the screen shows a centred crop of the scene)
     {
@@ -664,15 +819,18 @@ export class Scene {
     const scale = nums(this.value(o.scale) ?? '1 1 1');
     const angles = nums(this.value(o.angles) ?? '0 0 0');
     const depth = nums(this.value(o.parallaxDepth) ?? '0 0');
+    const shift = this.is3D ? 0 : 1;   // mouse parallax moves 2D layers only
     const pos = [
-      (origin[0] ?? 0) - this.parallax[0] * (depth[0] ?? 0) * amount * W * 0.1,
-      (origin[1] ?? 0) + this.parallax[1] * (depth[1] ?? 0) * amount * H * 0.1,
+      (origin[0] ?? 0) - shift * this.parallax[0] * (depth[0] ?? 0) * amount * W * 0.1,
+      (origin[1] ?? 0) + shift * this.parallax[1] * (depth[1] ?? 0) * amount * H * 0.1,
       origin[2] ?? 0,
     ];
     const model = layer.fullscreen ? modelMatrix([W / 2, H / 2, 0], [1, 1, 1], [0, 0, 0])
       : modelMatrix(pos, [scale[0] ?? 1, scale[1] ?? 1, scale[2] ?? 1], [angles[0] ?? 0, angles[1] ?? 0, angles[2] ?? 0]);
-    const mvp = mul(this.vp, model);
+    const flat = !layer.system && !layer.meshes;
+    const mvp = mul(flat ? this.vp2d : this.vp, model);
     if (layer.system) { this.drawParticles(layer, model, mvp, dt); return; }
+    if (layer.meshes) { this.drawModel(layer, model, mvp); return; }
 
     // object-level colour, alpha and brightness feed the image shader's own controls
     const alpha = Number(this.value(o.alpha) ?? 1);

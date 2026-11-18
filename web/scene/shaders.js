@@ -49,12 +49,27 @@ uint pape_${f}(uint a, uint b) { return ${f}(a, b); }
 `;
 const PRELUDE_NAMES = [...PRELUDE.matchAll(/#define (\w+)/g)].map(m => m[1]);
 
+// "#require LightingV1" pulls in lighting code WE generates from the scene's lights. Pape's stand-in adds up to
+// four point lights (positions and colour+radius set by scene.js) with WE's own PBR light function.
+const LIGHTING_V1 = `
+uniform vec3 pape_LightsPosition[4];
+uniform vec4 pape_LightsColorRadius[4];
+vec3 PerformLighting_V1(vec3 worldPos, vec3 albedo, vec3 normal, vec3 viewVector, vec3 specularTint, vec3 f0, float roughness, float metallic) {
+  vec3 light = vec3(0.0);
+  for (int i = 0; i < 4; i++)
+    light += ComputePBRLightShadow(normal, pape_LightsPosition[i] - worldPos, viewVector, albedo, pape_LightsColorRadius[i].rgb,
+      max(pape_LightsColorRadius[i].w, 0.001), 2.0, specularTint, f0, roughness, metallic, 1.0);
+  return light;
+}
+`;
+
 const VERT_HEAD = '#define attribute in\n#define varying out\n';
 const FRAG_HEAD = '#define varying in\nout vec4 pape_FragColor;\n#define gl_FragColor pape_FragColor\n';
 
 // HLSL (and WE's compiler) promote integer literals to floats; GLSL ES never does. Lines that work
 // with integers (declarations, loops, indexing) are left alone.
-const INT_LINE = /\b(int|uint|ivec[234]|uvec[234]|for|switch|case)\b|%|<<|>>/;
+// (declarations only: an int(...) cast still gets its literals fixed)
+const INT_LINE = /\b(int|uint|ivec[234]|uvec[234])\s+\w|\b(for|switch|case)\b|%|<<|>>/;
 const INT_LITERAL = /(?<![\w.]|[eE][+-])(\d+)(?![\w.])/g;
 // Words GLSL ES 3.00 reserves that WE shaders use as plain names.
 const RESERVED = /\b(sample|input|output|filter|common|partition|active|packed|buffer|superp|resource|shared|noise)\b/g;
@@ -157,7 +172,9 @@ export async function loadShader(name, read, combosFromMaterial = {}) {
   return { meta, combos, build: (extra = {}) => {
     const all = { ...combos, ...extra };
     const stage = (src, head) => {
-      const cleaned = floatLiterals(stripComments(src)).replace(RESERVED, 'pape_$1').replace(/^\s*#\s*require\b.*$/gm, '');
+      const lighting = head === FRAG_HEAD ? LIGHTING_V1 : '';
+      const cleaned = floatLiterals(stripComments(src)).replace(RESERVED, 'pape_$1')
+        .replace(/^\s*#\s*require\s+LightingV1\b.*$/gm, lighting).replace(/^\s*#\s*require\b.*$/gm, '');
       const { code, defines } = fixConditionals(hoistUniforms(cleaned), Object.keys(all));
       return '#version 300 es\n' + PRELUDE + head +
         Object.entries(all).map(([k, v]) => `#define ${k} ${Number(v) | 0}\n`).join('') + defines + code;

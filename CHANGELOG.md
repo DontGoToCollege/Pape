@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0 (2026-11-17)
+
+Phase 2, step 3: **3D scenes**.
+
+- 3D scene wallpapers play: perspective camera, camera paths that fly around the scene, `.mdl` models
+  (Wallpaper Engine's model format, versions 4, 14 and 23) with their materials, point lights and depth.
+- Wallpaper Engine's lit model shaders work: Pape supplies the lighting code WE normally generates per scene.
+- Particles face the camera in 3D scenes; full-screen layers (backgrounds, post effects) sit over the 3D view.
+- Material files with comments are read; one broken material no longer drops a whole model.
+- Not yet: skinned/animated models, shadows, bloom (glow), fur, text and sound layers, SceneScript.
+- Self-check now loads a small .mdl model it writes itself, and Wallpaper Engine's 3D Fantastic Car sample.
+
 ## 0.3.0 (2026-11-17)
 
 Phase 2, step 2: **particles** in scene wallpapers.

@@ -835,7 +835,8 @@ sealed class Engine : ApplicationContext
         for (var i = 0; i < 64 * 64; i++) { pixels[i * 4 + (i < 64 * 32 ? 1 : 2)] = 200; pixels[i * 4 + 3] = 255; }
         byte[] Text(string t) => System.Text.Encoding.UTF8.GetBytes(t);
         File.WriteAllBytes(Path.Combine(src, "scene-test", "scene.pkg"), SmokePkg(
-            ("scene.json", Text("""{"general":{"clearcolor":"1 0 0","orthogonalprojection":{"width":64,"height":64}},"objects":[{"name":"square","image":"models/smoke.json","origin":"32 32 0","scale":"1 1 1","angles":"0 0 0"},{"name":"dots","image":null,"particle":"particles/smoke.json","origin":"4 4 0"}]}""")),
+            ("scene.json", Text("""{"general":{"clearcolor":"1 0 0","orthogonalprojection":{"width":64,"height":64}},"objects":[{"name":"square","image":"models/smoke.json","origin":"32 32 0","scale":"1 1 1","angles":"0 0 0"},{"name":"dots","image":null,"particle":"particles/smoke.json","origin":"4 4 0"},{"name":"tile","model":"models/tile.mdl","origin":"60 4 0","scale":"2 2 1"}]}""")),
+            ("models/tile.mdl", SmokeMdl()),
             // a small particle system in a corner, away from the pixels the colour check reads
             ("particles/smoke.json", Text("""{"material":"materials/dot.json","maxcount":50,"starttime":1,"emitter":[{"name":"sphererandom","rate":100,"distancemax":2,"directions":"1 1 0"}],"initializer":[{"name":"lifetimerandom","min":5,"max":5},{"name":"sizerandom","min":2,"max":2}],"operator":[{"name":"movement"}],"renderer":[{"name":"sprite"}]}""")),
             ("materials/dot.json", Text("""{"passes":[{"blending":"translucent"}]}""")),
@@ -874,6 +875,24 @@ sealed class Engine : ApplicationContext
         var offset = 0;
         foreach (var (name, data) in files) { Str(name); w.Write(offset); w.Write(data.Length); offset += data.Length; }
         foreach (var (_, data) in files) w.Write(data);
+        return ms.ToArray();
+    }
+
+    /// <summary>A one-quad .mdl (positions and uvs, flags 9) using the smoke material.</summary>
+    static byte[] SmokeMdl()
+    {
+        using var ms = new MemoryStream();
+        using var w = new BinaryWriter(ms);
+        w.Write("MDLV0014\0"u8);
+        foreach (var v in new[] { 9 /* position + uv */, 1 /* material name per mesh */, 1 /* mesh */ }) w.Write(v);
+        w.Write("materials/smoke.json\0"u8);
+        w.Write(0);
+        w.Write(4 * 20);
+        foreach (var (x, y, u, v) in new[] { (-1f, -1f, 0f, 1f), (1f, -1f, 1f, 1f), (1f, 1f, 1f, 0f), (-1f, 1f, 0f, 0f) })
+        { w.Write(x); w.Write(y); w.Write(0f); w.Write(u); w.Write(v); }
+        w.Write(12);
+        foreach (var i in new ushort[] { 0, 1, 2, 0, 2, 3 }) w.Write(i);
+        w.Write((byte)0);
         return ms.ToArray();
     }
 
@@ -958,6 +977,8 @@ sealed class Engine : ApplicationContext
             Check(colours.Contains("top 0,200,0 bottom 0,0,200"), $"packed scene drawn the right way up ({colours})");
             var dots = await WaitFor("String(window.__scene?.layers.find(l => l.system)?.system.particles.length || 0)", v => v != "\"0\"");
             Check(dots != "\"0\"" && dots != "null", $"packed scene's particle system is running ({dots} particles)");
+            var meshes = await WaitFor("String(window.__scene?.layers.find(l => l.meshes)?.meshes.length || 0)", v => v != "\"0\"");
+            Check(meshes == "\"1\"", $"packed scene's .mdl model loaded ({meshes} mesh)");
             if (_windows.TryGetValue(key, out win)) await win.CaptureAsync(Path.Combine(dir, "smoke-scene.png"));
 
             // A real Wallpaper Engine scene with its shaders from WE's install, when WE is on this PC.
@@ -981,6 +1002,15 @@ sealed class Engine : ApplicationContext
                     Check(!beachInfo.Contains("frames 0 ") && !beachInfo.Contains("centre 0,0,0"), "Beach scene keeps drawing frames: " + beachInfo);
                     await win.CaptureAsync(Path.Combine(dir, "smoke-we-scene.png"));
                 }
+
+                // and a 3D one: perspective camera, .mdl models, lit materials
+                var car = Path.Combine(Path.GetDirectoryName(beach)!, "fantasticcar");
+                Slot(key)["item"] = _items.FirstOrDefault(i => string.Equals(Str(i["path"]), car, StringComparison.OrdinalIgnoreCase))?["id"]?.GetValue<string>();
+                Refresh();
+                var carInfo = await WaitFor("String(window.__sceneError || (window.__scene && window.__scene.is3D && window.__scene.layers.filter(l => l.meshes).length) || '')", v => v.Length > 2);
+                Check(carInfo == "\"4\"", $"Wallpaper Engine's 3D Fantastic Car scene loads its 4 models ({carInfo})");
+                await Task.Delay(1500);
+                if (_windows.TryGetValue(key, out win)) await win.CaptureAsync(Path.Combine(dir, "smoke-we-3d.png"));
             }
             else report.Add("skipped: Wallpaper Engine sample scene (Wallpaper Engine not installed)");
 

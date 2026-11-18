@@ -81,8 +81,6 @@ static class Library
             var pkg = type == "scene" && File.Exists(Path.Combine(dir, "scene.pkg"));
             var scene = type == "scene" && (pkg || hasMain);
             var supported = scene || type is "video" or "web" && hasMain;
-            // Only 2D (orthographic) scenes draw so far; a 3D one shows its preview. Packed scenes are checked when shown.
-            var flat = !scene || pkg || File.ReadAllText(main!).Contains("orthogonalprojection");
             var size = pkg ? new FileInfo(Path.Combine(dir, "scene.pkg")).Length : hasMain ? new FileInfo(main!).Length : 0;
             return new JsonObject
             {
@@ -93,7 +91,6 @@ static class Library
                 ["file"] = file,
                 ["pkg"] = pkg,
                 ["assets"] = scene && WeInstall is not null ? $"https://{WebHost.AssetsHost}/" : null,
-                ["note"] = flat ? null : "3D scene: shows its preview picture until 3D scenes are supported.",
                 ["preview"] = preview,
                 ["path"] = dir,
                 ["size"] = size,
